@@ -8,6 +8,7 @@ import logging
 import uuid
 
 from app.config import settings
+from app.services.data_loader import load_and_validate_records
 
 logger = logging.getLogger(__name__)
 
@@ -122,63 +123,55 @@ class AutomationEngine:
             }
         )
     
-    async def execute_task(self, task_data: Dict[str, Any]):
-        """Execute automation task and keep browser open on completion.
-
-        The browser stays open to allow manual control once the script finishes.
-        We only clean up on explicit stop or on errors.
-        """
+    async def execute_task(self, task_data: Dict[str, Any], data_file: str = None):
+        """Execute automation - supports both step-based and data-driven flows."""
         try:
             self.is_running = True
-
-            # Initialize browser
             if not await self.initialize_browser():
+                # initialization failed and sent its own error status
+                await self.cleanup() # Clean up on early failure
                 return
 
             await self.send_status("running", "Starting automation...")
 
-            steps = task_data.get('steps', [])
-
-            # If no structured steps are provided, run the built-in demo flow
-            if not steps:
-                await self.send_status("running", "Running demo flow")
-                await self.run_demo_flow()
+            # --- DATA-DRIVEN FLOW ---
+            if data_file:
+                await self.execute_data_driven(data_file)
+            
+            # --- STEP-BASED FLOW (existing logic) ---
             else:
-                for i, step in enumerate(steps):
-                    if not self.is_running:
-                        break
-
-                    # Pause handling
-                    while self.is_paused:
-                        await asyncio.sleep(0.5)
-
-                    # Execute step
-                    await self.send_status(
-                        "running",
-                        f"Executing step {i+1}: {step.get('action', 'unknown')}",
-                        {"current_step": i+1, "total_steps": len(steps)}
-                    )
-
-                    await self.execute_step(step)
-
-                    # Take screenshot after each step
-                    screenshot_filename = f"{self.session_id}_step_{i+1}.png"
-                    screenshot_path = f"{settings.screenshot_dir}/{screenshot_filename}"
-                    await self.page.screenshot(path=screenshot_path)
-
-                    await self.send_status(
-                        "step_complete",
-                        f"Step {i+1} completed",
-                        {"step": i+1, "screenshot": f"/screenshots/{screenshot_filename}"}
-                    )
-
-            # Script finished - keep the browser open for manual control
+                steps = task_data.get('steps', [])
+                if not steps:
+                    await self.send_status("running", "Running demo flow")
+                    await self.run_demo_flow()
+                else:
+                    total_steps = len(steps)
+                    for i, step in enumerate(steps, 1):
+                        if not self.is_running: break
+                        while self.is_paused: await asyncio.sleep(0.5)
+                        
+                        await self.send_status(
+                            "running",
+                            f"Executing step {i}: {step.get('action', 'unknown')}",
+                            {"current_step": i, "total_steps": total_steps}
+                        )
+                        await self.execute_step(step)
+                        
+                        screenshot_filename = f"{self.session_id}_step_{i}.png"
+                        screenshot_path = os.path.join(settings.screenshot_dir, screenshot_filename)
+                        await self.page.screenshot(path=screenshot_path)
+                        
+                        await self.send_status(
+                            "step_complete",
+                            f"Step {i} completed",
+                            {"step": i, "screenshot": f"/screenshots/{screenshot_filename}"}
+                        )
+            
             await self.send_status("completed", "Script finished. Manual control enabled.")
-
+            
         except Exception as e:
-            logger.error(f"Automation error: {str(e)}")
+            logger.error(f"Automation error: {str(e)}", exc_info=True)
             await self.send_status("error", f"Automation failed: {str(e)}")
-            # Only clean up on error
             await self.cleanup()
     
     async def execute_step(self, step: Dict[str, Any]):
@@ -222,6 +215,34 @@ class AutomationEngine:
         except Exception as e:
             logger.error(f"Step execution failed: {str(e)}")
             raise
+
+    async def execute_data_driven(self, filename: str):
+        """Execute data-driven automation from a validated CSV/Excel file."""
+        import os
+        file_path = os.path.join(settings.upload_dir, filename)
+        data = load_and_validate_records(file_path)
+        records = data["records"]
+
+        await self.send_status("running", f"Processing {len(records)} records from file.")
+        await self.page.goto("https://angularformadd.netlify.app/")
+
+        for i, record in enumerate(records, 1):
+            if not self.is_running:
+                break
+            while self.is_paused:
+                await asyncio.sleep(0.5)
+            await self.send_status(
+                "running",
+                f"Processing record {i}/{len(records)}: {record['start_location']}",
+                {"current_step": i, "total_steps": len(records)}
+            )
+
+            await self.page.get_by_role("button", name="+ Add New Route").click()
+            await self.page.get_by_role("textbox", name="Enter start location").fill(record["start_location"]) 
+            await self.page.get_by_role("textbox", name="Enter end location").fill(record["end_location"]) 
+            await self.page.get_by_placeholder("0.00").fill(str(record["price"]))
+            await self.page.get_by_role("button", name="Save Route").click()
+            await asyncio.sleep(0.5)
 
     async def run_demo_flow(self):
         """Run a demo flow equivalent to the provided sync Playwright script.

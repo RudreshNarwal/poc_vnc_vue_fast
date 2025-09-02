@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload # Import selectinload
 from typing import List
 import logging
 
@@ -53,17 +54,22 @@ async def list_tasks(
 ):
     """List all automation tasks"""
     try:
-        result = await db.execute(
-            select(Task).offset(skip).limit(limit).order_by(Task.created_at.desc())
+        query = (
+            select(Task)
+            .offset(skip)
+            .limit(limit)
+            .order_by(Task.created_at.desc())
+            .options(selectinload(Task.executions))  # Eagerly load executions
         )
-        tasks = result.scalars().all()
+        result = await db.execute(query)
+        tasks = result.scalars().unique().all() # Use .unique() to handle cartesian product
         return tasks
         
     except Exception as e:
-        logger.error(f"Failed to list tasks: {str(e)}")
+        logger.error(f"Failed to list tasks: {str(e)}", exc_info=True) # Add exc_info for full traceback
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list tasks: {str(e)}"
+            detail=f"Failed to list tasks: An internal error occurred."
         )
 
 @router.get("/{task_id}", response_model=TaskResponse)

@@ -58,15 +58,45 @@
 
       <!-- Setup/Steps Panel -->
       <aside class="w-[360px] border-r border-gray-200 p-4 space-y-4 bg-gray-50 hidden lg:block">
-        <!-- Prerequisites Upload (placeholder UI) -->
+        
         <section>
-          <div class="text-xs font-semibold text-gray-700 mb-2">Prerequisites</div>
-          <div class="rounded-xl border border-dashed border-gray-300 bg-white p-6 text-center shadow-sm">
-            <div class="mx-auto mb-2 w-12 h-12 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center">
-              <svg class="w-5 h-5 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+          <div class="text-xs font-semibold text-gray-700 mb-2">Data File</div>
+          <div 
+            class="rounded-xl border border-dashed border-gray-300 bg-white p-6 text-center shadow-sm cursor-pointer hover:border-blue-500 transition-colors"
+            :class="{ 'border-blue-500 bg-blue-50': isDragging }"
+            @dragover.prevent="isDragging = true"
+            @dragleave.prevent="isDragging = false"
+            @drop.prevent="handleFileDrop"
+            @click="triggerFileInput"
+          >
+            <input type="file" ref="fileInput" @change="handleFileUpload" accept=".csv,.xlsx,.xls" class="hidden" />
+            
+            <div v-if="!fileState.uploaded">
+              <div class="mx-auto mb-2 w-12 h-12 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center">
+                  <svg class="w-5 h-5 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+              </div>
+              <div class="text-sm text-gray-700">Drop CSV/Excel or <span class="text-blue-600 font-medium">browse</span></div>
+              <div class="text-[10px] text-gray-500 mt-1">Requires: start_location, end_location, price</div>
             </div>
-            <div class="text-sm text-gray-700">Drop your files here, or <button class="text-blue-600 hover:underline">browse</button></div>
-            <div class="text-[10px] text-gray-500 mt-1">Supports: .xlsx, .xls, .csv</div>
+            <div v-if="fileState.uploaded && fileState.validating">
+              <div class="mx-auto mb-2 w-12 h-12 rounded-full bg-blue-100 border border-blue-200 flex items-center justify-center">
+                  <svg class="w-5 h-5 text-blue-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4"/></svg>
+              </div>
+              <div class="text-sm text-gray-700">Validating file...</div>
+            </div>
+            <div v-if="fileState.uploaded && fileState.valid">
+              <div class="mx-auto mb-2 w-12 h-12 rounded-full bg-emerald-100 border border-emerald-200 flex items-center justify-center">
+                  <svg class="w-5 h-5 text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4"/></svg>
+              </div>
+              <div class="text-sm text-gray-700">File uploaded and validated!</div>
+              <div class="text-xs text-gray-500 mt-1">Total rows: {{ fileState.totalRows }}</div>
+            </div>
+            <div v-if="fileState.uploaded && fileState.error">
+              <div class="mx-auto mb-2 w-12 h-12 rounded-full bg-rose-100 border border-rose-200 flex items-center justify-center">
+                  <svg class="w-5 h-5 text-rose-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"/></svg>
+              </div>
+              <div class="text-sm text-gray-700">{{ fileState.errorMessage }}</div>
+            </div>
           </div>
         </section>
 
@@ -148,7 +178,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import axios from 'axios'
 import { useWebSocketStore } from '../stores/websocket.js'
 import BrowserViewport from './BrowserViewport.vue'
@@ -183,6 +213,20 @@ const takeScreens = ref(true)
 const timeout = ref(30000)
 const retries = ref(1)
 const waitBetween = ref(0)
+
+// File upload state
+const fileInput = ref(null)
+const isDragging = ref(false)
+const fileState = reactive({
+  uploaded: false,
+  validating: false,
+  valid: false,
+  error: false,
+  errorMessage: '',
+  filename: '',
+  originalName: '',
+  totalRows: 0,
+})
 
 // Helpers
 const statusPill = (s) => {
@@ -261,6 +305,53 @@ const stopAutomation = async () => {
     isPaused.value = false
   } catch {}
 }
+
+const processFile = async (file) => {
+  if (!file) return;
+
+  fileState.uploaded = true;
+  fileState.validating = true;
+  fileState.error = false;
+  isDragging.value = false;
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const { data } = await axios.post('/api/files/upload-and-validate', formData);
+    fileState.validating = false;
+    fileState.valid = true;
+    fileState.filename = data.filename;
+    fileState.originalName = data.original_filename;
+    fileState.totalRows = data.validation.total_rows;
+  } catch (e) {
+    fileState.validating = false;
+    fileState.error = true;
+    fileState.errorMessage = e.response?.data?.detail || 'An unknown error occurred.';
+  }
+};
+
+const handleFileUpload = (event) => {
+  processFile(event.target.files[0]);
+};
+
+const handleFileDrop = (event) => {
+  isDragging.value = false;
+  processFile(event.dataTransfer.files[0]);
+};
+
+const triggerFileInput = () => fileInput.value.click();
+
+const clearFile = () => {
+  fileState.uploaded = false;
+  fileState.validating = false;
+  fileState.valid = false;
+  fileState.error = false;
+  fileState.errorMessage = '';
+  fileState.filename = '';
+  fileState.originalName = '';
+  fileState.totalRows = 0;
+};
 
 // Toolbar dummy actions
 const reload = () => {}
