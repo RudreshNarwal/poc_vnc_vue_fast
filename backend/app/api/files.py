@@ -10,11 +10,13 @@ from fastapi import (APIRouter, Depends, File, Form, HTTPException, UploadFile,
                      status)
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.database import get_db
 from app.models.file import File as FileModel
 from app.models.file import FileResponse
 from app.services.data_loader import load_and_validate_records
 from app.services.storage import StorageService, get_storage_service
+from fastapi.responses import FileResponse as FastAPIFileResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -153,7 +155,7 @@ async def download_file(filename: str):
                 detail="File not found"
             )
         
-        return FileResponse(
+        return FastAPIFileResponse(
             path=file_path,
             filename=filename,
             media_type='application/octet-stream'

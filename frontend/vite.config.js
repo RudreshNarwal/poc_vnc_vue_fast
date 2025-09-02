@@ -30,21 +30,21 @@ export default defineConfig({
       },
       // VNC WebSocket and HTTP interface
       '/websockify': {
-        target: 'ws://vnc:7900',
+        target: 'ws://app:7900',
         ws: true,
         changeOrigin: true
       },
       '/vnc.html': {
-        target: 'http://vnc:7900',
+        target: 'http://app:7900',
         changeOrigin: true
       },
       // Static files
       '/screenshots': {
-        target: 'http://backend:8000',
+        target: 'http://app:8000',
         changeOrigin: true
       },
       '/uploads': {
-        target: 'http://backend:8000',
+        target: 'http://app:8000',
         changeOrigin: true
       }
     }

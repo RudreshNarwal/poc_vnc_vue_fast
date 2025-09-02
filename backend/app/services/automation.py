@@ -6,10 +6,12 @@ import pytz
 from typing import Dict, Any, Optional
 import logging
 import uuid
+import importlib
 
 from app.config import settings
 from app.services.data_loader import load_and_validate_records
 from app.models.file import File
+from app.services.storage import get_storage_service
 
 logger = logging.getLogger(__name__)
 
@@ -128,19 +130,28 @@ class AutomationEngine:
         self.is_running = True
         logger.info(f"Session {self.session_id}: Executing task '{task_data['name']}'")
 
+        # Always initialize the browser so VNC displays activity
+        if not await self.initialize_browser():
+            logger.error(f"Session {self.session_id}: Halting task due to browser initialization failure.")
+            await self.cleanup()
+            return
+
         try:
-            if task_data.get("script_path"):
-                await self.execute_script_based_task(task_data, file)
-            elif task_data.get("steps"):
-                await self.execute_step_based_task(task_data)
-            else:
-                # Default to a simple demo if no steps or script
-                await self.run_demo_flow()
+            # Temporary: force a demo flow to validate VNC rendering
+            logger.warning(f"Session {self.session_id}: Bypassing task logic to run VNC demo flow.")
+            await self.run_demo_flow()
+            await self.send_status("completed", "Demo flow finished. Manual control is now active.")
+
+            # Keep the browser open for manual interaction
+            await asyncio.sleep(3600)
+
         except Exception as e:
             logger.error(f"Session {self.session_id}: Task execution failed: {e}", exc_info=True)
             await self.send_status("error", f"Automation failed: {str(e)}")
         finally:
-            await self.cleanup()
+            # Intentionally not cleaning up immediately to keep VNC visible
+            # await self.cleanup()
+            logger.info(f"Session {self.session_id}: Task finished. Browser will remain open.")
 
     async def execute_script_based_task(self, task_data: Dict[str, Any], file: File):
         script_path = task_data["script_path"]
@@ -181,7 +192,7 @@ class AutomationEngine:
         
         logger.info(f"Session {self.session_id}: Script-based task completed.")
 
-    async def execute_step_based_task(self, task_data: Dict[str, Any]):
+    async def execute_step_based_task(self, task_data: Dict[str, Any], filename: str):
         """Execute data-driven automation from a validated CSV/Excel file."""
         import os
         file_path = os.path.join(settings.upload_dir, filename)
