@@ -9,6 +9,7 @@ import uuid
 
 from app.config import settings
 from app.services.data_loader import load_and_validate_records
+from app.models.file import File
 
 logger = logging.getLogger(__name__)
 
@@ -123,100 +124,64 @@ class AutomationEngine:
             }
         )
     
-    async def execute_task(self, task_data: Dict[str, Any], data_file: str = None):
-        """Execute automation - supports both step-based and data-driven flows."""
+    async def execute_task(self, task_data: Dict[str, Any], file: File = None):
+        self.is_running = True
+        logger.info(f"Session {self.session_id}: Executing task '{task_data['name']}'")
+
         try:
-            self.is_running = True
-            if not await self.initialize_browser():
-                # initialization failed and sent its own error status
-                await self.cleanup() # Clean up on early failure
-                return
-
-            await self.send_status("running", "Starting automation...")
-
-            # --- DATA-DRIVEN FLOW ---
-            if data_file:
-                await self.execute_data_driven(data_file)
-            
-            # --- STEP-BASED FLOW (existing logic) ---
+            if task_data.get("script_path"):
+                await self.execute_script_based_task(task_data, file)
+            elif task_data.get("steps"):
+                await self.execute_step_based_task(task_data)
             else:
-                steps = task_data.get('steps', [])
-                if not steps:
-                    await self.send_status("running", "Running demo flow")
-                    await self.run_demo_flow()
-                else:
-                    total_steps = len(steps)
-                    for i, step in enumerate(steps, 1):
-                        if not self.is_running: break
-                        while self.is_paused: await asyncio.sleep(0.5)
-                        
-                        await self.send_status(
-                            "running",
-                            f"Executing step {i}: {step.get('action', 'unknown')}",
-                            {"current_step": i, "total_steps": total_steps}
-                        )
-                        await self.execute_step(step)
-                        
-                        screenshot_filename = f"{self.session_id}_step_{i}.png"
-                        screenshot_path = os.path.join(settings.screenshot_dir, screenshot_filename)
-                        await self.page.screenshot(path=screenshot_path)
-                        
-                        await self.send_status(
-                            "step_complete",
-                            f"Step {i} completed",
-                            {"step": i, "screenshot": f"/screenshots/{screenshot_filename}"}
-                        )
-            
-            await self.send_status("completed", "Script finished. Manual control enabled.")
-            
-        except Exception as e:
-            logger.error(f"Automation error: {str(e)}", exc_info=True)
-            await self.send_status("error", f"Automation failed: {str(e)}")
-            await self.cleanup()
-    
-    async def execute_step(self, step: Dict[str, Any]):
-        """Execute individual automation step"""
-        action = step.get('action')
-        target = step.get('target')
-        value = step.get('value')
-        
-        try:
-            if action == 'navigate':
-                await self.page.goto(target, wait_until='networkidle', timeout=settings.playwright_timeout)
-            
-            elif action == 'click':
-                await self.page.click(target, timeout=settings.playwright_timeout)
-            
-            elif action == 'type':
-                await self.page.fill(target, value, timeout=settings.playwright_timeout)
-            
-            elif action == 'wait':
-                if target == 'wait_for_element':
-                    await self.page.wait_for_selector(value, timeout=settings.playwright_timeout)
-                else:
-                    await asyncio.sleep(int(value) / 1000)  # Convert ms to seconds
-            
-            elif action == 'select':
-                await self.page.select_option(target, value, timeout=settings.playwright_timeout)
-            
-            elif action == 'screenshot':
-                filename = f"{self.session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                await self.page.screenshot(path=f"{settings.screenshot_dir}/{filename}")
-            
-            elif action == 'interactive_pause':
-                await self.send_status("paused", "Automation paused for interaction")
-                self.is_paused = True
-                while self.is_paused:
-                    await asyncio.sleep(0.5)
-
-            elif action == 'run_demo_flow':
+                # Default to a simple demo if no steps or script
                 await self.run_demo_flow()
-            
         except Exception as e:
-            logger.error(f"Step execution failed: {str(e)}")
-            raise
+            logger.error(f"Session {self.session_id}: Task execution failed: {e}", exc_info=True)
+            await self.send_status("error", f"Automation failed: {str(e)}")
+        finally:
+            await self.cleanup()
 
-    async def execute_data_driven(self, filename: str):
+    async def execute_script_based_task(self, task_data: Dict[str, Any], file: File):
+        script_path = task_data["script_path"]
+        logger.info(f"Session {self.session_id}: Running script-based task from '{script_path}'")
+
+        if not file:
+            raise ValueError("This task requires a data file, but none was provided.")
+
+        # Download the file from storage
+        storage = get_storage_service()
+        local_path = f"/tmp/{file.filename}"
+        storage.download_file(file.storage_path, local_path)
+        
+        # Load records from the downloaded file
+        data = load_and_validate_records(local_path)
+        if not data["is_valid"]:
+            raise ValueError(f"Data file is invalid: {data['error']}")
+        
+        # Dynamically import the automation script
+        try:
+            module_path, func_name = script_path.rsplit(':', 1)
+            module = importlib.import_module(module_path)
+            automation_func = getattr(module, func_name)
+        except (ImportError, AttributeError) as e:
+            raise ImportError(f"Could not import automation function '{script_path}': {e}")
+        
+        # Define progress callback
+        async def progress_callback(progress_data: Dict[str, Any]):
+            await self.send_status("progress", "Automation progress", progress_data)
+            
+        # Run the automation script
+        async with async_playwright() as p:
+            # Note: The script itself is synchronous, so we'd need to run it in a thread
+            # to avoid blocking the asyncio event loop. For simplicity in this example,
+            # we'll assume the script is fast or this is run in a separate process.
+            # A production implementation should use `loop.run_in_executor`.
+            automation_func(p, data, progress_callback)
+        
+        logger.info(f"Session {self.session_id}: Script-based task completed.")
+
+    async def execute_step_based_task(self, task_data: Dict[str, Any]):
         """Execute data-driven automation from a validated CSV/Excel file."""
         import os
         file_path = os.path.join(settings.upload_dir, filename)

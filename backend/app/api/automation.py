@@ -10,19 +10,20 @@ from typing import Dict, Any
 from app.models.database import get_db
 from app.models.task import Task
 from app.models.execution import Execution, ExecutionCreate, ExecutionResponse
+from app.models.file import File as FileModel
 from app.services.automation import AutomationEngine, automation_engines, websocket_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 class ExecuteRequest(BaseModel):
-    data_file: Optional[str] = None
+    file_id: Optional[int] = None
 
 @router.post("/execute/{task_id}")
 async def execute_task(
     task_id: int,
     background_tasks: BackgroundTasks,
-    request: Optional[ExecuteRequest] = None,  # Make the request body optional
+    request: Optional[ExecuteRequest] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """Start executing an automation task"""
@@ -40,12 +41,21 @@ async def execute_task(
         # Generate session ID
         session_id = str(uuid.uuid4())
         
+        file_id = request.file_id if request else None
+        file_record = None
+        if file_id:
+            result = await db.execute(select(FileModel).where(FileModel.id == file_id))
+            file_record = result.scalar_one_or_none()
+            if not file_record:
+                raise HTTPException(status_code=404, detail=f"File with id {file_id} not found.")
+
         # Create execution record
         execution = Execution(
             session_id=session_id,
             task_id=task_id,
             status="pending",
-            total_steps=len(task.steps)
+            total_steps=len(task.steps) if task.steps else 0,
+            file_id=file_id
         )
         
         db.add(execution)
@@ -60,14 +70,12 @@ async def execute_task(
         task_data = {
             "id": task.id,
             "name": task.name,
-            "steps": task.steps
+            "steps": task.steps,
+            "script_path": task.script_path
         }
         
-        # Safely get the data_file if the request body exists
-        data_file_name = request.data_file if request else None
-        
-        # Start automation in background, optionally with data_file
-        background_tasks.add_task(engine.execute_task, task_data, data_file=data_file_name)
+        # Start automation in background
+        background_tasks.add_task(engine.execute_task, task_data, file=file_record)
         
         logger.info(f"Started automation for task {task_id}, session {session_id}")
         

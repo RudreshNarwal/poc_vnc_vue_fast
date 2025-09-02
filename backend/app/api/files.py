@@ -1,133 +1,145 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, status
-from fastapi.responses import FileResponse
-import os
-import uuid
 import logging
-import pandas as pd
+import os
+import shutil
+import uuid
+from tempfile import NamedTemporaryFile
+from typing import Dict, Any
 from pathlib import Path
 
-from app.config import settings
+from fastapi import (APIRouter, Depends, File, Form, HTTPException, UploadFile,
+                     status)
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.database import get_db
+from app.models.file import File as FileModel
+from app.models.file import FileResponse
 from app.services.data_loader import load_and_validate_records
+from app.services.storage import StorageService, get_storage_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-ALLOWED_EXTENSIONS = {'.xlsx', '.xls', '.csv', '.txt', '.json'}
-ALLOWED_MIME_TYPES = {
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'application/vnd.ms-excel',
-    'text/csv',
-    'text/plain',
-    'application/json'
-}
+@router.post("/upload", response_model=FileResponse, status_code=status.HTTP_201_CREATED)
+async def upload_and_validate(
+    file: UploadFile = File(...),
+    task_id: int = Form(...),
+    db: AsyncSession = Depends(get_db),
+    storage: StorageService = Depends(get_storage_service)
+):
+    """
+    Upload a file, save it using the configured storage service,
+    create a file record in the database, and validate its contents.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file name provided.")
 
-@router.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    """Upload a file (Excel, CSV, etc.) for automation prerequisites"""
+    file_extension = os.path.splitext(file.filename)[1].lower()
+    if file_extension not in [".csv", ".xlsx"]:
+        raise HTTPException(status_code=400, detail="Unsupported file type.")
+    
+    # Create a temporary file to store the upload
     try:
-        # Validate file
-        if not file.filename:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No filename provided"
-            )
+        with NamedTemporaryFile(delete=False, suffix=file_extension) as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            tmp_path = tmp.name
+    finally:
+        file.file.close()
+
+    unique_filename = f"{uuid.uuid4()}{file_extension}"
+    
+    try:
+        # Upload to storage
+        storage_path = storage.upload_file(
+            file_path=tmp_path,
+            file_name=unique_filename,
+            content_type=file.content_type
+        )
         
-        # Check file extension
-        file_ext = Path(file.filename).suffix.lower()
-        if file_ext not in ALLOWED_EXTENSIONS:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File type {file_ext} not allowed. Allowed types: {', '.join(ALLOWED_EXTENSIONS)}"
-            )
+        # Validate data
+        validation_results = load_and_validate_records(storage_path)
         
-        # Check file size
-        content = await file.read()
-        if len(content) > settings.max_upload_size:
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"File too large. Maximum size: {settings.max_upload_size / 1024 / 1024:.1f}MB"
-            )
+        # Create DB record
+        file_record = FileModel(
+            filename=unique_filename,
+            original_filename=file.filename,
+            storage_path=storage_path,
+            file_type=file_extension.strip('.'),
+            status="validated" if validation_results["is_valid"] else "error",
+            validation_results=validation_results,
+            task_id=task_id
+        )
         
-        # Generate unique filename
-        unique_filename = f"{uuid.uuid4()}{file_ext}"
-        file_path = os.path.join(settings.upload_dir, unique_filename)
+        db.add(file_record)
+        await db.commit()
+        await db.refresh(file_record)
         
-        # Save file
-        with open(file_path, "wb") as f:
-            f.write(content)
-        
-        # Try to parse file for preview
-        preview_data = None
-        try:
-            if file_ext in ['.xlsx', '.xls']:
-                df = pd.read_excel(file_path, nrows=5)
-                preview_data = {
-                    "columns": df.columns.tolist(),
-                    "sample_rows": df.head().to_dict('records'),
-                    "total_rows": len(pd.read_excel(file_path))
-                }
-            elif file_ext == '.csv':
-                df = pd.read_csv(file_path, nrows=5)
-                preview_data = {
-                    "columns": df.columns.tolist(),
-                    "sample_rows": df.head().to_dict('records'),
-                    "total_rows": len(pd.read_csv(file_path))
-                }
-        except Exception as e:
-            logger.warning(f"Could not parse file for preview: {str(e)}")
-        
-        logger.info(f"File uploaded: {file.filename} -> {unique_filename}")
-        
-        return {
-            "filename": unique_filename,
-            "original_filename": file.filename,
-            "size": len(content),
-            "content_type": file.content_type,
-            "url": f"/uploads/{unique_filename}",
-            "preview": preview_data
-        }
-        
-    except HTTPException:
-        raise
+        logger.info(f"File '{file.filename}' uploaded and validated for task {task_id}.")
+        return file_record
+
     except Exception as e:
-        logger.error(f"File upload failed: {str(e)}")
+        logger.error(f"Failed to process file upload: {e}", exc_info=True)
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"File upload failed: {str(e)}"
+            detail=f"An error occurred during file processing: {e}"
         )
+    finally:
+        # Clean up the temporary file
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 @router.post("/upload-and-validate")
 async def upload_and_validate_file(file: UploadFile = File(...)):
     """Uploads a CSV/XLSX, saves to uploads, and validates records for automation."""
     file_ext = Path(file.filename).suffix.lower()
     if file_ext not in {'.xlsx', '.xls', '.csv'}:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File type not allowed. Please use .csv or .xlsx.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File type not allowed. Please use .csv or .xlsx."
+        )
 
     unique_filename = f"{uuid.uuid4()}{file_ext}"
     file_path = os.path.join(settings.upload_dir, unique_filename)
 
     try:
         content = await file.read()
+        # ✅ Check if the uploaded file is empty
+        if not content:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The uploaded file is empty."
+            )
+            
         with open(file_path, "wb") as f:
             f.write(content)
 
-        validation = load_and_validate_records(file_path)
+        # This call can now raise HTTPException directly for validation errors
+        validation_data = load_and_validate_records(file_path)
+        
         logger.info(f"File '{file.filename}' uploaded and validated successfully.")
         return {
             "message": "File validated successfully!",
             "filename": unique_filename,
             "original_filename": file.filename,
-            "validation": validation
+            "validation": validation_data
         }
+    
+    # ✅ Catch specific validation errors first
     except HTTPException as e:
+        # If a validation error occurs, clean up the temp file and re-raise
         if os.path.exists(file_path):
             os.remove(file_path)
         raise e
+        
+    # Catch any other unexpected errors
     except Exception as e:
         if os.path.exists(file_path):
             os.remove(file_path)
-        logger.error(f"Validation failed: {str(e)}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        logger.error(f"An unexpected error occurred during file validation: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An unexpected server error occurred: {str(e)}"
+        )
 
 @router.get("/download/{filename}")
 async def download_file(filename: str):

@@ -12,9 +12,12 @@ class Execution(Base):
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String(255), unique=True, nullable=False, index=True)
     task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
-    status = Column(String(50), default="pending")  # pending, running, paused, completed, failed, stopped
+    status = Column(String(50), nullable=False)  # pending, running, paused, completed, failed
     current_step = Column(Integer, default=0)
     total_steps = Column(Integer, default=0)
+    
+    file_id = Column(Integer, ForeignKey("files.id"), nullable=True)
+    
     start_time = Column(DateTime(timezone=True), nullable=True)
     end_time = Column(DateTime(timezone=True), nullable=True)
     error_message = Column(Text, nullable=True)
@@ -24,6 +27,7 @@ class Execution(Base):
     
     # Relationships
     task = relationship("Task", back_populates="executions")
+    file = relationship("File", back_populates="executions")
 
 # Pydantic models for API
 class ExecutionCreate(BaseModel):
@@ -44,6 +48,7 @@ class ExecutionResponse(BaseModel):
     status: str
     current_step: int
     total_steps: int
+    file_id: Optional[int]
     start_time: Optional[datetime]
     end_time: Optional[datetime]
     error_message: Optional[str]

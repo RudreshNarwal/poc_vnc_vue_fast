@@ -16,6 +16,7 @@ from app.models.task import Task
 from sqlalchemy import select
 from app.services.automation import AutomationEngine
 from app.api import tasks, automation, files, websocket
+# from app.migrations.add_file_management import apply_migrations #<-- REMOVE
 
 # Configure logging
 logging.basicConfig(
@@ -27,36 +28,36 @@ logger = logging.getLogger(__name__)
 # Lifespan context manager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    logger.info(f"Starting {settings.app_name}")
+    # On startup
     await init_db()
-
-    # Seed default task if it doesn't exist
+    
+    # Apply database migrations - REMOVED from startup
+    # await apply_migrations() 
+    
+    # Seed initial data
     async with AsyncSessionLocal() as db:
-        result = await db.execute(select(Task).where(Task.name == "Live Browser Test"))
-        task = result.scalar_one_or_none()
-        if not task:
-            logger.info("Creating default 'Live Browser Test' task.")
-            demo_task = Task(
-                name="Live Browser Test",
-                description="Interactive test automation with live browser view using the demo script.",
-                steps=[], # Empty steps will trigger the demo flow
-                prerequisites=[],
-                status="ready"
+        result = await db.execute(select(Task).where(Task.name == "Route Addition Automation"))
+        if not result.scalar_one_or_none():
+            new_task = Task(
+                name="Route Addition Automation",
+                description="Upload a CSV/Excel file to add multiple routes to the system.",
+                status="ready",
+                script_path="app.automation_scripts.route_automation:run_automation",
+                prerequisites=[{
+                    "type": "file_upload",
+                    "name": "routes_file",
+                    "description": "A .csv or .xlsx file with 'start_location', 'end_location', and 'price' columns.",
+                    "required": True
+                }]
             )
-            db.add(demo_task)
+            db.add(new_task)
             await db.commit()
-
     yield
-    # Shutdown
-    logger.info("Shutting down")
+    # On shutdown
+    # (any cleanup logic here)
 
 # Create FastAPI app
-app = FastAPI(
-    title=settings.app_name,
-    version="1.0.0",
-    lifespan=lifespan
-)
+app = FastAPI(lifespan=lifespan)
 
 # CORS
 app.add_middleware(

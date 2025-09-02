@@ -1,50 +1,44 @@
 from pydantic_settings import BaseSettings
-from typing import Optional
-import os
 
 class Settings(BaseSettings):
-    # App
-    app_name: str = "Automation Studio"
+    # App settings
+    app_name: str = "AutomationStudio"
     app_env: str = "development"
     debug: bool = True
-    secret_key: str = "dev-secret-key-change-in-production"
+    secret_key: str = "your-secret-key-change-this-in-production"
     timezone: str = "America/New_York"
     
-    # Database
-    database_url: str = "postgresql://admin:password@postgres:5432/automation"
+    # Database settings
+    DATABASE_URL: str = "postgresql+asyncpg://admin:password@postgres:5432/automation"
     
-    # VNC
+    # Storage settings
+    STORAGE_BACKEND: str = "local"  # 'local' or 'minio'
+    MINIO_ENDPOINT: str = "minio:9000"
+    MINIO_ACCESS_KEY: str = "minioadmin"
+    MINIO_SECRET_KEY: str = "minioadmin123"
+    MINIO_BUCKET_NAME: str = "automation-files"
+    upload_dir: str = "/app/uploads"
+    screenshot_dir: str = "/app/screenshots"
+    max_upload_size: int = 10485760
+    
+    # VNC settings
+    VNC_PUBLIC_HOST: str = "localhost"
     vnc_host: str = "vnc"
     vnc_display: str = ":1"
     vnc_port: int = 5901
     vnc_web_port: int = 7900
     
-    # VNC Security (for production)
-    vnc_password: Optional[str] = None  # Set via environment variable
-    vnc_require_auth: bool = False  # Enable in production
-    
-    # Public hostname for VNC
-    vnc_public_host: Optional[str] = None  # e.g., "automation.mycompany.com"
-    
-    # Storage
-    upload_dir: str = "/app/uploads"
-    screenshot_dir: str = "/app/screenshots"
-    max_upload_size: int = 10485760  # 10MB
-    
-    # Playwright
-    playwright_headless: bool = False  # MUST be False for VNC visibility
+    # Playwright settings
+    playwright_headless: bool = False
     playwright_timeout: int = 30000
     playwright_viewport_width: int = 1920
     playwright_viewport_height: int = 1080
     
-    # WebSocket
+    # WebSocket settings
     ws_heartbeat_interval: int = 30
-    
+
     class Config:
         env_file = ".env"
+        env_file_encoding = 'utf-8'
 
 settings = Settings()
-
-# Create directories
-os.makedirs(settings.upload_dir, exist_ok=True)
-os.makedirs(settings.screenshot_dir, exist_ok=True)

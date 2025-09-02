@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 # Create async engine
 engine = create_async_engine(
-    settings.database_url,
+    settings.DATABASE_URL,
     echo=settings.debug,
     future=True
 )
@@ -41,7 +41,8 @@ async def init_db():
             # Import all models here to register them
             from app.models.task import Task
             from app.models.execution import Execution
-            
+            from app.models.file import File
+
             # Create all tables
             await conn.run_sync(Base.metadata.create_all)
             

@@ -6,8 +6,7 @@ SECRET_KEY=your-secret-key-change-this-in-production
 TIMEZONE=America/New_York
 
 # Database
-DATABASE_URL=postgresql://admin:password@postgres:5432/automation
-
+DATABASE_URL=postgresql+asyncpg://admin:password@postgres:5432/automation
 # VNC Settings
 VNC_HOST=vnc
 VNC_DISPLAY=:1
