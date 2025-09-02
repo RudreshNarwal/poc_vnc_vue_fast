@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from pydantic import BaseModel
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import uuid
@@ -13,10 +15,14 @@ from app.services.automation import AutomationEngine, automation_engines, websoc
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+class ExecuteRequest(BaseModel):
+    data_file: Optional[str] = None
+
 @router.post("/execute/{task_id}")
 async def execute_task(
     task_id: int,
     background_tasks: BackgroundTasks,
+    request: Optional[ExecuteRequest] = None,  # Make the request body optional
     db: AsyncSession = Depends(get_db)
 ):
     """Start executing an automation task"""
@@ -57,8 +63,11 @@ async def execute_task(
             "steps": task.steps
         }
         
-        # Start automation in background
-        background_tasks.add_task(engine.execute_task, task_data)
+        # Safely get the data_file if the request body exists
+        data_file_name = request.data_file if request else None
+        
+        # Start automation in background, optionally with data_file
+        background_tasks.add_task(engine.execute_task, task_data, data_file=data_file_name)
         
         logger.info(f"Started automation for task {task_id}, session {session_id}")
         

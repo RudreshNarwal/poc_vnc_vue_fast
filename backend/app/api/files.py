@@ -2,12 +2,12 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, status
 from fastapi.responses import FileResponse
 import os
 import uuid
-from typing import List
 import logging
 import pandas as pd
 from pathlib import Path
 
 from app.config import settings
+from app.services.data_loader import load_and_validate_records
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -95,6 +95,39 @@ async def upload_file(file: UploadFile = File(...)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"File upload failed: {str(e)}"
         )
+
+@router.post("/upload-and-validate")
+async def upload_and_validate_file(file: UploadFile = File(...)):
+    """Uploads a CSV/XLSX, saves to uploads, and validates records for automation."""
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in {'.xlsx', '.xls', '.csv'}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File type not allowed. Please use .csv or .xlsx.")
+
+    unique_filename = f"{uuid.uuid4()}{file_ext}"
+    file_path = os.path.join(settings.upload_dir, unique_filename)
+
+    try:
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        validation = load_and_validate_records(file_path)
+        logger.info(f"File '{file.filename}' uploaded and validated successfully.")
+        return {
+            "message": "File validated successfully!",
+            "filename": unique_filename,
+            "original_filename": file.filename,
+            "validation": validation
+        }
+    except HTTPException as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise e
+    except Exception as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        logger.error(f"Validation failed: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 @router.get("/download/{filename}")
 async def download_file(filename: str):
