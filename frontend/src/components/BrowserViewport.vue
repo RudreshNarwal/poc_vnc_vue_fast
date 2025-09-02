@@ -1,26 +1,27 @@
 <template>
   <div class="relative w-full h-full bg-black">
-    <!-- VNC Screen -->
     <div id="vnc-screen" class="w-full h-full"></div>
-    
-    <!-- Connection Status -->
-    <div v-if="connectionStatus" 
+
+    <div v-if="connectionStatus"
          :class="statusClasses"
          class="absolute top-4 right-4 px-3 py-1 rounded text-sm">
       {{ connectionStatus }}
     </div>
-    
-    <!-- Interactive Controls -->
-    <div v-if="isPaused" 
+
+    <div v-if="scriptCompleted"
+         class="absolute top-4 left-4 bg-green-500 text-white px-3 py-1 rounded text-sm font-medium">
+      ✓ Manual Control Active
+    </div>
+
+    <div v-if="isPaused"
          class="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-2">
-      <button @click="resume" 
+      <button @click="resume"
               class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">
         Resume Automation
       </button>
     </div>
-    
-    <!-- Loading Overlay -->
-    <div v-if="isConnecting" 
+
+    <div v-if="isConnecting"
          class="absolute inset-0 bg-black bg-opacity-75 flex items-center justify-center">
       <div class="text-white text-center">
         <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-4"></div>
@@ -28,10 +29,10 @@
       </div>
     </div>
   </div>
-</template>
+  </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
+import { ref, onUnmounted, watch, computed } from 'vue'
 import RFB from '@novnc/novnc/core/rfb'
 
 const props = defineProps({
@@ -39,17 +40,22 @@ const props = defineProps({
   isRunning: Boolean
 })
 
-const emit = defineEmits(['pause', 'resume'])
+const emit = defineEmits(['resume'])
 
 const vnc = ref(null)
 const connectionStatus = ref('')
 const isConnecting = ref(false)
 const isPaused = ref(false)
-const vncConfig = ref(null)
+const scriptCompleted = ref(false)
+
+// Compute view-only: allow interaction when paused or after completion
+const isViewOnly = computed(() => {
+  return props.isRunning && !isPaused.value && !scriptCompleted.value
+})
 
 const statusClasses = computed(() => {
   const base = 'px-3 py-1 rounded text-sm font-medium'
-  if (connectionStatus.value === 'Connected') {
+  if (connectionStatus.value === 'Connected' || connectionStatus.value === 'Manual Control Active') {
     return `${base} bg-green-500 text-white`
   } else if (connectionStatus.value === 'Connecting...') {
     return `${base} bg-yellow-500 text-white`
@@ -62,61 +68,29 @@ const connectVNC = async () => {
   try {
     isConnecting.value = true
     connectionStatus.value = 'Connecting...'
-    
-    // Get VNC config from backend
+
     const response = await fetch('/api/vnc/config')
-    vncConfig.value = await response.json()
-    
+    const vncConfig = await response.json()
     const screen = document.getElementById('vnc-screen')
     if (!screen) return
-    
-    // Clear previous connection
-    if (vnc.value) {
-      vnc.value.disconnect()
-    }
-    
-    // Create new RFB connection - NO PASSWORD
-    vnc.value = new RFB(
-      screen, 
-      vncConfig.value.url,
-      {
-        scaleViewport: true,
-        resizeSession: false,
-        showDotCursor: true,
-        viewOnly: !isPaused.value,
-        clipViewport: false,
-        dragViewport: false,
-        focusOnClick: true,
-        background: 'rgb(0, 0, 0)'
-      }
-    )
-    
-    // Event handlers
-    vnc.value.addEventListener('connect', () => {
-      // Ensure scaling is explicitly enabled once connected
-      try {
-        vnc.value.scaleViewport = true
-        vnc.value.clipViewport = false
-      } catch (e) {
-        console.warn('Failed to apply viewport scaling:', e)
-      }
+    if (vnc.value) vnc.value.disconnect()
 
+    vnc.value = new RFB(screen, vncConfig.url, {
+      scaleViewport: true,
+      viewOnly: isViewOnly.value
+    })
+
+    vnc.value.addEventListener('connect', () => {
       connectionStatus.value = 'Connected'
       isConnecting.value = false
-      console.log('VNC connected successfully')
+      vnc.value.viewOnly = isViewOnly.value
+      try { vnc.value.scaleViewport = true } catch {}
     })
-    
-    vnc.value.addEventListener('disconnect', (e) => {
+
+    vnc.value.addEventListener('disconnect', () => {
       connectionStatus.value = 'Disconnected'
       isConnecting.value = false
-      console.log('VNC disconnected:', e.detail)
     })
-    
-    vnc.value.addEventListener('credentialsrequired', () => {
-      // No credentials needed - passwordless setup
-      console.log('VNC: No credentials required')
-    })
-    
   } catch (error) {
     console.error('VNC connection error:', error)
     connectionStatus.value = 'Connection failed'
@@ -131,43 +105,52 @@ const disconnectVNC = () => {
   }
 }
 
-const pause = () => {
-  isPaused.value = true
-  if (vnc.value) {
-    vnc.value.viewOnly = false  // Enable interaction
-  }
-  emit('pause')
-}
-
 const resume = () => {
   isPaused.value = false
-  if (vnc.value) {
-    vnc.value.viewOnly = true  // Disable interaction
-  }
   emit('resume')
 }
 
-// Auto-connect when running
 watch(() => props.isRunning, (newVal) => {
   if (newVal) {
-    setTimeout(connectVNC, 1000)  // Give browser time to start
-  } else {
+    scriptCompleted.value = false
+    isPaused.value = false
+    setTimeout(connectVNC, 1000)
+  } else if (!scriptCompleted.value) {
     disconnectVNC()
   }
 })
 
-// Handle WebSocket messages for pause state
+// apply viewOnly updates
+watch(isViewOnly, (newVal) => {
+  if (vnc.value) vnc.value.viewOnly = newVal
+})
+
+// Handle WebSocket messages
 watch(() => props.sessionId, (newVal) => {
   if (newVal) {
     const ws = new WebSocket(`/ws/${newVal}`)
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data)
-      if (data.status === 'paused') {
-        isPaused.value = true
-        if (vnc.value) vnc.value.viewOnly = false
-      } else if (data.status === 'running') {
-        isPaused.value = false
-        if (vnc.value) vnc.value.viewOnly = true
+      if (data.type === 'status') {
+        switch (data.status) {
+          case 'paused':
+            isPaused.value = true
+            break
+          case 'completed':
+            scriptCompleted.value = true
+            isPaused.value = false
+            connectionStatus.value = 'Manual Control Active'
+            break
+          case 'running':
+            isPaused.value = false
+            scriptCompleted.value = false
+            break
+          case 'stopped':
+          case 'error':
+            isPaused.value = false
+            scriptCompleted.value = false
+            break
+        }
       }
     }
   }

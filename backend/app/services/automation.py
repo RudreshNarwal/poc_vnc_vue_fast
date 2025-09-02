@@ -123,59 +123,62 @@ class AutomationEngine:
         )
     
     async def execute_task(self, task_data: Dict[str, Any]):
-        """Execute automation task"""
+        """Execute automation task and keep browser open on completion.
+
+        The browser stays open to allow manual control once the script finishes.
+        We only clean up on explicit stop or on errors.
+        """
         try:
             self.is_running = True
-            
+
             # Initialize browser
             if not await self.initialize_browser():
                 return
-            
+
             await self.send_status("running", "Starting automation...")
-            
-            # Execute steps
+
             steps = task_data.get('steps', [])
 
             # If no structured steps are provided, run the built-in demo flow
             if not steps:
                 await self.send_status("running", "Running demo flow")
                 await self.run_demo_flow()
-                await self.send_status("completed", "Demo flow completed")
-                return
-            for i, step in enumerate(steps):
-                if not self.is_running:
-                    break
-                    
-                # Check if paused
-                while self.is_paused:
-                    await asyncio.sleep(0.5)
-                
-                # Execute step
-                await self.send_status(
-                    "running", 
-                    f"Executing step {i+1}: {step.get('action', 'unknown')}",
-                    {"current_step": i+1, "total_steps": len(steps)}
-                )
-                
-                await self.execute_step(step)
-                
-                # Take screenshot after each step
-                screenshot_filename = f"{self.session_id}_step_{i+1}.png"
-                screenshot_path = f"{settings.screenshot_dir}/{screenshot_filename}"
-                await self.page.screenshot(path=screenshot_path)
-                
-                await self.send_status(
-                    "step_complete",
-                    f"Step {i+1} completed",
-                    {"step": i+1, "screenshot": f"/screenshots/{screenshot_filename}"}
-                )
-            
-            await self.send_status("completed", "Automation completed successfully")
-            
+            else:
+                for i, step in enumerate(steps):
+                    if not self.is_running:
+                        break
+
+                    # Pause handling
+                    while self.is_paused:
+                        await asyncio.sleep(0.5)
+
+                    # Execute step
+                    await self.send_status(
+                        "running",
+                        f"Executing step {i+1}: {step.get('action', 'unknown')}",
+                        {"current_step": i+1, "total_steps": len(steps)}
+                    )
+
+                    await self.execute_step(step)
+
+                    # Take screenshot after each step
+                    screenshot_filename = f"{self.session_id}_step_{i+1}.png"
+                    screenshot_path = f"{settings.screenshot_dir}/{screenshot_filename}"
+                    await self.page.screenshot(path=screenshot_path)
+
+                    await self.send_status(
+                        "step_complete",
+                        f"Step {i+1} completed",
+                        {"step": i+1, "screenshot": f"/screenshots/{screenshot_filename}"}
+                    )
+
+            # Script finished - keep the browser open for manual control
+            await self.send_status("completed", "Script finished. Manual control enabled.")
+
         except Exception as e:
             logger.error(f"Automation error: {str(e)}")
             await self.send_status("error", f"Automation failed: {str(e)}")
-        finally:
+            # Only clean up on error
             await self.cleanup()
     
     async def execute_step(self, step: Dict[str, Any]):
