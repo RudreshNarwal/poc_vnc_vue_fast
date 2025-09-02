@@ -13,6 +13,7 @@ from app.services.automation import AutomationEngine, automation_engines, websoc
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+
 @router.post("/execute/{task_id}")
 async def execute_task(
     task_id: int,
