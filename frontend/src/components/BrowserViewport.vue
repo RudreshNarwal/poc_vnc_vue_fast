@@ -93,6 +93,14 @@ const connectVNC = async () => {
     
     // Event handlers
     vnc.value.addEventListener('connect', () => {
+      // Ensure scaling is explicitly enabled once connected
+      try {
+        vnc.value.scaleViewport = true
+        vnc.value.clipViewport = false
+      } catch (e) {
+        console.warn('Failed to apply viewport scaling:', e)
+      }
+
       connectionStatus.value = 'Connected'
       isConnecting.value = false
       console.log('VNC connected successfully')

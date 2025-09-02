@@ -11,7 +11,9 @@ from typing import Dict, List, Optional
 import logging
 
 from app.config import settings
-from app.models.database import init_db
+from app.models.database import init_db, AsyncSessionLocal
+from app.models.task import Task
+from sqlalchemy import select
 from app.services.automation import AutomationEngine
 from app.api import tasks, automation, files, websocket
 
@@ -28,6 +30,23 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info(f"Starting {settings.app_name}")
     await init_db()
+
+    # Seed default task if it doesn't exist
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Task).where(Task.name == "Live Browser Test"))
+        task = result.scalar_one_or_none()
+        if not task:
+            logger.info("Creating default 'Live Browser Test' task.")
+            demo_task = Task(
+                name="Live Browser Test",
+                description="Interactive test automation with live browser view using the demo script.",
+                steps=[], # Empty steps will trigger the demo flow
+                prerequisites=[],
+                status="ready"
+            )
+            db.add(demo_task)
+            await db.commit()
+
     yield
     # Shutdown
     logger.info("Shutting down")

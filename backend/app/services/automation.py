@@ -135,6 +135,13 @@ class AutomationEngine:
             
             # Execute steps
             steps = task_data.get('steps', [])
+
+            # If no structured steps are provided, run the built-in demo flow
+            if not steps:
+                await self.send_status("running", "Running demo flow")
+                await self.run_demo_flow()
+                await self.send_status("completed", "Demo flow completed")
+                return
             for i, step in enumerate(steps):
                 if not self.is_running:
                     break
@@ -205,9 +212,42 @@ class AutomationEngine:
                 self.is_paused = True
                 while self.is_paused:
                     await asyncio.sleep(0.5)
+
+            elif action == 'run_demo_flow':
+                await self.run_demo_flow()
             
         except Exception as e:
             logger.error(f"Step execution failed: {str(e)}")
+            raise
+
+    async def run_demo_flow(self):
+        """Run a demo flow equivalent to the provided sync Playwright script.
+
+        This is used when a task does not provide structured steps. The flow opens
+        the demo site and performs a short interaction, which should be visible via VNC.
+        """
+        try:
+            # Navigate to the sample app
+            await self.page.goto("https://angularformadd.netlify.app/")
+
+            # Interact per the script
+            await self.page.get_by_role("button", name="+ Add New Route").click()
+            await self.page.get_by_role("textbox", name="Enter start location").click()
+            await self.page.get_by_role("textbox", name="Enter start location").fill("test")
+            await self.page.get_by_role("textbox", name="Enter end location").click()
+            await self.page.get_by_role("textbox", name="Enter end location").fill("test")
+            await self.page.get_by_placeholder("0.00").click()
+            await self.page.get_by_placeholder("0.00").fill("100")
+            await self.page.get_by_role("button", name="Save Route").click()
+            await self.page.get_by_role("button", name="⚡").click()
+            await self.page.get_by_role("button", name="▶️ Run Demo (2 Routes)").click()
+
+            # Small wait to ensure UI updates are visible
+            await asyncio.sleep(2)
+
+        except Exception as e:
+            logger.error(f"Demo flow failed: {str(e)}")
+            await self.send_status("error", f"Demo flow failed: {str(e)}")
             raise
     
     async def pause(self):
