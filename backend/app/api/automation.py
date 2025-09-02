@@ -15,6 +15,7 @@ from app.services.automation import AutomationEngine, automation_engines, websoc
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+
 class ExecuteRequest(BaseModel):
     data_file: Optional[str] = None
 
