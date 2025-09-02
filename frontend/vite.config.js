@@ -19,12 +19,12 @@ export default defineConfig({
     proxy: {
       // API proxy
       '/api': {
-        target: 'http://backend:8000',
+        target: 'http://app:8000',
         changeOrigin: true
       },
       // WebSocket proxy for automation control
       '/ws': {
-        target: 'ws://backend:8000',
+        target: 'ws://app:8000',
         ws: true,
         changeOrigin: true
       },

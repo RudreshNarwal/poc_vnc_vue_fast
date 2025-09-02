@@ -1,0 +1,44 @@
+# Use Microsoft's official Playwright image (includes browsers + Python)
+FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+
+USER root
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV TZ=America/New_York
+ENV DEBIAN_FRONTEND=noninteractive
+ENV DISPLAY=:1
+
+# Install VNC and desktop components
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    xvfb \
+    fluxbox \
+    x11vnc \
+    supervisor \
+    netcat-openbsd \
+    git && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install noVNC
+RUN git clone --depth 1 https://github.com/novnc/noVNC.git /opt/noVNC && \
+    git clone --depth 1 https://github.com/novnc/websockify.git /opt/noVNC/utils/websockify
+
+WORKDIR /app
+
+# Install Python dependencies
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Create directories
+RUN mkdir -p /var/log/supervisor /app/uploads /app/screenshots
+
+# Copy supervisor configuration
+COPY supervisord.unified.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Copy application
+COPY backend/ /app/
+
+EXPOSE 8000 5901 7900
+
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

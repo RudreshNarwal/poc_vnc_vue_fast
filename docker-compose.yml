@@ -1,17 +1,17 @@
 services:
-  backend:
-    build: ./backend
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.unified
     ports:
-      - "8000:8000"
-    environment:
-      - TZ=America/New_York
-      - DISPLAY=:1
-      - VNC_PUBLIC_HOST=${VNC_PUBLIC_HOST:-localhost}  # For production
+      - "8000:8000"  # Backend API
+      - "5901:5901"  # VNC protocol
+      - "7900:7900"  # noVNC Web UI
     env_file:
       - ./backend/.env
+    environment:
+      - VNC_PUBLIC_HOST=${VNC_PUBLIC_HOST:-localhost}
     depends_on:
-      vnc:
-        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
@@ -20,13 +20,14 @@ services:
       - ./backend:/app
       - screenshots:/app/screenshots
       - uploads:/app/uploads
+    shm_size: '2gb'
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      test: ["CMD-SHELL", "nc -z localhost 5901 && nc -z localhost 8000"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 40s
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      start_period: 60s
+    restart: unless-stopped
     networks:
       - automation-network
 
@@ -40,30 +41,9 @@ services:
       - ./frontend:/app
       - /app/node_modules
     depends_on:
-      backend:
+      app:
         condition: service_healthy
     command: npm run dev
-    networks:
-      - automation-network
-
-  vnc:
-    build: ./vnc
-    ports:
-      - "5901:5901"  # VNC
-      - "7900:7900"  # noVNC HTTP with websockify
-    environment:
-      - DISPLAY=:1
-      - TZ=America/New_York
-    shm_size: '2gb'
-    volumes:
-      - screenshots:/app/screenshots
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "5901"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    restart: unless-stopped
     networks:
       - automation-network
 
