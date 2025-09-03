@@ -46,11 +46,22 @@ class LocalStorage(StorageService):
 class MinioStorage(StorageService):
     def __init__(self):
         try:
-            self.client = Minio(
+            # Internal client for server-to-MinIO operations
+            self.client_internal = Minio(
                 settings.MINIO_ENDPOINT,
                 access_key=settings.MINIO_ACCESS_KEY,
                 secret_key=settings.MINIO_SECRET_KEY,
-                secure=False
+                secure=False,
+                region="us-east-1"
+            )
+            # Public client used only to construct presigned URLs for the browser
+            public_endpoint = settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT
+            self.client_public = Minio(
+                public_endpoint,
+                access_key=settings.MINIO_ACCESS_KEY,
+                secret_key=settings.MINIO_SECRET_KEY,
+                secure=False,
+                region="us-east-1"
             )
             self.bucket_name = settings.MINIO_BUCKET_NAME
             self.ensure_bucket_exists()
@@ -60,9 +71,9 @@ class MinioStorage(StorageService):
 
     def ensure_bucket_exists(self):
         try:
-            found = self.client.bucket_exists(self.bucket_name)
+            found = self.client_internal.bucket_exists(self.bucket_name)
             if not found:
-                self.client.make_bucket(self.bucket_name)
+                self.client_internal.make_bucket(self.bucket_name)
                 logger.info(f"Bucket '{self.bucket_name}' created.")
         except S3Error as e:
             logger.error(f"Error checking or creating bucket: {e}")
@@ -70,7 +81,7 @@ class MinioStorage(StorageService):
 
     def upload_file(self, file_path: str, file_name: str, content_type: str) -> str:
         try:
-            self.client.fput_object(
+            self.client_internal.fput_object(
                 self.bucket_name, file_name, file_path, content_type=content_type
             )
             return file_name
@@ -80,7 +91,7 @@ class MinioStorage(StorageService):
 
     def get_presigned_url(self, file_path: str) -> str:
         try:
-            return self.client.presigned_get_object(
+            return self.client_public.presigned_get_object(
                 self.bucket_name, file_path, expires=timedelta(hours=1)
             )
         except S3Error as e:
@@ -89,7 +100,7 @@ class MinioStorage(StorageService):
 
     def download_file(self, file_path: str, destination_path: str):
         try:
-            self.client.fget_object(self.bucket_name, file_path, destination_path)
+            self.client_internal.fget_object(self.bucket_name, file_path, destination_path)
         except S3Error as e:
             logger.error(f"Failed to download {file_path} from MinIO: {e}")
             raise

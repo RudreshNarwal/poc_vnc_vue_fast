@@ -35,6 +35,7 @@ class FileResponse(BaseModel):
     validation_results: Optional[Dict[str, Any]]
     task_id: int
     created_at: datetime
+    url: Optional[str] = None
     
     class Config:
         from_attributes = True

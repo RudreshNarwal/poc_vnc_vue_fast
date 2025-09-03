@@ -1,3 +1,4 @@
+from typing import Optional
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -17,6 +18,7 @@ class Settings(BaseSettings):
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin123"
     MINIO_BUCKET_NAME: str = "automation-files"
+    MINIO_PUBLIC_ENDPOINT: Optional[str] = None
     upload_dir: str = "/app/uploads"
     screenshot_dir: str = "/app/screenshots"
     max_upload_size: int = 10485760

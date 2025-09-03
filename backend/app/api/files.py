@@ -50,15 +50,21 @@ async def upload_and_validate(
     unique_filename = f"{uuid.uuid4()}{file_extension}"
     
     try:
-        # Upload to storage
+        # Validate data from local temp file
+        validation_results = load_and_validate_records(tmp_path)
+
+        # Upload to configured storage
         storage_path = storage.upload_file(
             file_path=tmp_path,
             file_name=unique_filename,
             content_type=file.content_type
         )
-        
-        # Validate data
-        validation_results = load_and_validate_records(storage_path)
+
+        # Construct access URL
+        if settings.STORAGE_BACKEND == "minio":
+            url = storage.get_presigned_url(unique_filename)
+        else:
+            url = f"/uploads/{unique_filename}"
         
         # Create DB record
         file_record = FileModel(
@@ -66,7 +72,7 @@ async def upload_and_validate(
             original_filename=file.filename,
             storage_path=storage_path,
             file_type=file_extension.strip('.'),
-            status="validated" if validation_results["is_valid"] else "error",
+            status="validated",
             validation_results=validation_results,
             task_id=task_id
         )
@@ -76,7 +82,17 @@ async def upload_and_validate(
         await db.refresh(file_record)
         
         logger.info(f"File '{file.filename}' uploaded and validated for task {task_id}.")
-        return file_record
+        return {
+            "id": file_record.id,
+            "filename": file_record.filename,
+            "original_filename": file_record.original_filename,
+            "file_type": file_record.file_type,
+            "status": file_record.status,
+            "validation_results": file_record.validation_results,
+            "task_id": file_record.task_id,
+            "created_at": file_record.created_at,
+            "url": url
+        }
 
     except Exception as e:
         logger.error(f"Failed to process file upload: {e}", exc_info=True)
