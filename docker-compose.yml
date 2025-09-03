@@ -39,6 +39,7 @@ services:
       - MINIO_SECRET_KEY=minioadmin123
       - MINIO_BUCKET_NAME=automation-files
       - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9000}
+      - MINIO_REGION=us-east-1
       - STORAGE_BACKEND=minio  # Can be 'local' or 'minio'
     depends_on:
       postgres:

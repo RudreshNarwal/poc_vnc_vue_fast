@@ -174,6 +174,25 @@
         <div class="px-5 py-3 border-t border-gray-200 text-xs text-gray-600 bg-white">Run History</div>
       </section>
     </div>
+
+    <!-- Upload result modal -->
+    <div v-if="showUploadDialog" class="fixed inset-0 z-50 flex items-center justify-center">
+      <div class="fixed inset-0 bg-black/40" @click="closeDialog"></div>
+      <div class="relative bg-white rounded-lg shadow-xl w-full max-w-md p-6">
+        <h3 class="text-lg font-medium text-gray-900">{{ uploadDialog.title }}</h3>
+        <p class="mt-2 text-sm text-gray-700">{{ uploadDialog.message }}</p>
+        <div class="mt-6 flex justify-end gap-2">
+          <template v-if="uploadDialog.type === 'success'">
+            <button class="px-3.5 py-1.5 text-sm rounded-md bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm" @click="() => { startAutomation(); closeDialog(); }">Start Automation</button>
+            <button class="px-3.5 py-1.5 text-sm rounded-md bg-gray-200 hover:bg-gray-300 text-gray-900 shadow-sm" @click="closeDialog">Close</button>
+          </template>
+          <template v-else>
+            <button class="px-3.5 py-1.5 text-sm rounded-md bg-gray-200 hover:bg-gray-300 text-gray-900 shadow-sm" @click="closeDialog">Close</button>
+          </template>
+        </div>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -182,8 +201,10 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import axios from 'axios'
 import { useWebSocketStore } from '../stores/websocket.js'
 import BrowserViewport from './BrowserViewport.vue'
+import { useUploadsStore } from '../stores/uploads.js'
 
 const wsStore = useWebSocketStore()
+const uploads = useUploadsStore()
 
 // Tasks
 const tasks = ref([])
@@ -227,6 +248,9 @@ const fileState = reactive({
   originalName: '',
   totalRows: 0,
 })
+
+const showUploadDialog = ref(false)
+const uploadDialog = reactive({ type: 'success', title: '', message: '' })
 
 // Helpers
 const statusPill = (s) => {
@@ -309,6 +333,11 @@ const stopAutomation = async () => {
 const processFile = async (file) => {
   if (!file) return;
 
+  if (!selectedTaskId.value) {
+    openErrorDialog('Please select a task before uploading.')
+    return
+  }
+
   fileState.uploaded = true;
   fileState.validating = true;
   fileState.error = false;
@@ -316,18 +345,28 @@ const processFile = async (file) => {
 
   const formData = new FormData();
   formData.append('file', file);
+  formData.append('task_id', String(selectedTaskId.value));
 
   try {
-    const { data } = await axios.post('/api/files/upload-and-validate', formData);
+    const { data } = await axios.post('/api/files/upload', formData, {
+      headers: { 'Accept': 'application/json' }
+    });
+    // Persist full FileResponse in Pinia by task id
+    uploads.setForTask(selectedTaskId.value, data);
+
     fileState.validating = false;
     fileState.valid = true;
     fileState.filename = data.filename;
     fileState.originalName = data.original_filename;
-    fileState.totalRows = data.validation.total_rows;
+    fileState.totalRows = data?.validation_results?.total_rows ?? 0;
+
+    const msg = `${data.original_filename} uploaded successfully.${fileState.totalRows ? ' Total rows: ' + fileState.totalRows : ''}`
+    openSuccessDialog(msg)
   } catch (e) {
     fileState.validating = false;
     fileState.error = true;
     fileState.errorMessage = e.response?.data?.detail || 'An unknown error occurred.';
+    openErrorDialog(fileState.errorMessage)
   }
 };
 
@@ -352,6 +391,22 @@ const clearFile = () => {
   fileState.originalName = '';
   fileState.totalRows = 0;
 };
+
+const openSuccessDialog = (message) => {
+  uploadDialog.type = 'success'
+  uploadDialog.title = 'Upload successful'
+  uploadDialog.message = message
+  showUploadDialog.value = true
+}
+const openErrorDialog = (message) => {
+  uploadDialog.type = 'error'
+  uploadDialog.title = 'Upload failed'
+  uploadDialog.message = message
+  showUploadDialog.value = true
+}
+const closeDialog = () => {
+  showUploadDialog.value = false
+}
 
 // Toolbar dummy actions
 const reload = () => {}

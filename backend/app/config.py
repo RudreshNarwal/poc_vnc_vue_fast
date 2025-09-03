@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = "minioadmin123"
     MINIO_BUCKET_NAME: str = "automation-files"
     MINIO_PUBLIC_ENDPOINT: Optional[str] = None
+    MINIO_REGION: str = "us-east-1"
     upload_dir: str = "/app/uploads"
     screenshot_dir: str = "/app/screenshots"
     max_upload_size: int = 10485760

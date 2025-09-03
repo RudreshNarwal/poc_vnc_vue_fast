@@ -52,7 +52,7 @@ class MinioStorage(StorageService):
                 access_key=settings.MINIO_ACCESS_KEY,
                 secret_key=settings.MINIO_SECRET_KEY,
                 secure=False,
-                region="us-east-1"
+                region=settings.MINIO_REGION
             )
             # Public client used only to construct presigned URLs for the browser
             public_endpoint = settings.MINIO_PUBLIC_ENDPOINT or settings.MINIO_ENDPOINT
@@ -61,7 +61,7 @@ class MinioStorage(StorageService):
                 access_key=settings.MINIO_ACCESS_KEY,
                 secret_key=settings.MINIO_SECRET_KEY,
                 secure=False,
-                region="us-east-1"
+                region=settings.MINIO_REGION
             )
             self.bucket_name = settings.MINIO_BUCKET_NAME
             self.ensure_bucket_exists()
