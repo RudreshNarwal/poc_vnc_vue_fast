@@ -16,7 +16,7 @@ from app.models.task import Task
 from sqlalchemy import select
 from app.services.automation import AutomationEngine
 from app.api import tasks, automation, files, websocket
-# from app.migrations.add_file_management import apply_migrations #<-- REMOVE
+
 
 # Configure logging
 logging.basicConfig(
@@ -30,9 +30,6 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # On startup
     await init_db()
-    
-    # Apply database migrations - REMOVED from startup
-    # await apply_migrations() 
     
     # Seed initial data
     async with AsyncSessionLocal() as db:

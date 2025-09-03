@@ -5,13 +5,8 @@ from datetime import datetime
 import pytz
 from typing import Dict, Any, Optional
 import logging
-import uuid
-import importlib
 
 from app.config import settings
-from app.services.data_loader import load_and_validate_records
-from app.models.file import File
-from app.services.storage import get_storage_service
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +121,7 @@ class AutomationEngine:
             }
         )
     
-    async def execute_task(self, task_data: Dict[str, Any], file: File = None):
+    async def execute_task(self, task_data: Dict[str, Any], file = None):
         self.is_running = True
         logger.info(f"Session {self.session_id}: Executing task '{task_data['name']}'")
 
@@ -137,13 +132,17 @@ class AutomationEngine:
             return
 
         try:
-            # Temporary: force a demo flow to validate VNC rendering
-            logger.warning(f"Session {self.session_id}: Bypassing task logic to run VNC demo flow.")
-            await self.run_demo_flow()
-            await self.send_status("completed", "Demo flow finished. Manual control is now active.")
+            # Run the actual route automation script with async browser workflow
+            logger.info(f"Session {self.session_id}: Running route automation script.")
+            await self.run_route_automation()
+            await self.send_status("completed", "Route automation finished. Manual control is now active.")
 
-            # Keep the browser open for manual interaction
-            await asyncio.sleep(3600)
+            # Keep the browser open for manual interaction (no time limit)
+            logger.info(f"Session {self.session_id}: Browser will remain open indefinitely for manual inspection.")
+            
+            # Wait indefinitely - user can manually close or use stop command
+            while self.is_running:
+                await asyncio.sleep(10)  # Check every 10 seconds if still running
 
         except Exception as e:
             logger.error(f"Session {self.session_id}: Task execution failed: {e}", exc_info=True)
@@ -153,102 +152,96 @@ class AutomationEngine:
             # await self.cleanup()
             logger.info(f"Session {self.session_id}: Task finished. Browser will remain open.")
 
-    async def execute_script_based_task(self, task_data: Dict[str, Any], file: File):
-        script_path = task_data["script_path"]
-        logger.info(f"Session {self.session_id}: Running script-based task from '{script_path}'")
 
-        if not file:
-            raise ValueError("This task requires a data file, but none was provided.")
 
-        # Download the file from storage
-        storage = get_storage_service()
-        local_path = f"/tmp/{file.filename}"
-        storage.download_file(file.storage_path, local_path)
-        
-        # Load records from the downloaded file
-        data = load_and_validate_records(local_path)
-        if not data["is_valid"]:
-            raise ValueError(f"Data file is invalid: {data['error']}")
-        
-        # Dynamically import the automation script
-        try:
-            module_path, func_name = script_path.rsplit(':', 1)
-            module = importlib.import_module(module_path)
-            automation_func = getattr(module, func_name)
-        except (ImportError, AttributeError) as e:
-            raise ImportError(f"Could not import automation function '{script_path}': {e}")
-        
-        # Define progress callback
-        async def progress_callback(progress_data: Dict[str, Any]):
-            await self.send_status("progress", "Automation progress", progress_data)
-            
-        # Run the automation script
-        async with async_playwright() as p:
-            # Note: The script itself is synchronous, so we'd need to run it in a thread
-            # to avoid blocking the asyncio event loop. For simplicity in this example,
-            # we'll assume the script is fast or this is run in a separate process.
-            # A production implementation should use `loop.run_in_executor`.
-            automation_func(p, data, progress_callback)
-        
-        logger.info(f"Session {self.session_id}: Script-based task completed.")
+    async def run_route_automation(self):
+        """Run the actual route automation script using existing browser.
 
-    async def execute_step_based_task(self, task_data: Dict[str, Any], filename: str):
-        """Execute data-driven automation from a validated CSV/Excel file."""
-        import os
-        file_path = os.path.join(settings.upload_dir, filename)
-        data = load_and_validate_records(file_path)
-        records = data["records"]
-
-        await self.send_status("running", f"Processing {len(records)} records from file.")
-        await self.page.goto("https://angularformadd.netlify.app/")
-
-        for i, record in enumerate(records, 1):
-            if not self.is_running:
-                break
-            while self.is_paused:
-                await asyncio.sleep(0.5)
-            await self.send_status(
-                "running",
-                f"Processing record {i}/{len(records)}: {record['start_location']}",
-                {"current_step": i, "total_steps": len(records)}
-            )
-
-            await self.page.get_by_role("button", name="+ Add New Route").click()
-            await self.page.get_by_role("textbox", name="Enter start location").fill(record["start_location"]) 
-            await self.page.get_by_role("textbox", name="Enter end location").fill(record["end_location"]) 
-            await self.page.get_by_placeholder("0.00").fill(str(record["price"]))
-            await self.page.get_by_role("button", name="Save Route").click()
-            await asyncio.sleep(0.5)
-
-    async def run_demo_flow(self):
-        """Run a demo flow equivalent to the provided sync Playwright script.
-
-        This is used when a task does not provide structured steps. The flow opens
-        the demo site and performs a short interaction, which should be visible via VNC.
+        This calls the async route_automation function with the current page instance.
         """
         try:
-            # Navigate to the sample app
-            await self.page.goto("https://angularformadd.netlify.app/")
-
-            # Interact per the script
-            await self.page.get_by_role("button", name="+ Add New Route").click()
-            await self.page.get_by_role("textbox", name="Enter start location").click()
-            await self.page.get_by_role("textbox", name="Enter start location").fill("test")
-            await self.page.get_by_role("textbox", name="Enter end location").click()
-            await self.page.get_by_role("textbox", name="Enter end location").fill("test")
-            await self.page.get_by_placeholder("0.00").click()
-            await self.page.get_by_placeholder("0.00").fill("100")
-            await self.page.get_by_role("button", name="Save Route").click()
-            await self.page.get_by_role("button", name="⚡").click()
-            await self.page.get_by_role("button", name="▶️ Run Demo (2 Routes)").click()
-
-            # Small wait to ensure UI updates are visible
-            await asyncio.sleep(2)
-
+            # Import the async route automation function
+            from app.automation_scripts.route_automation import run_automation_async
+            
+            # Define progress callback (async version for route automation)
+            async def progress_callback(progress_data: Dict[str, Any]):
+                await self.send_status("progress", "Route automation progress", progress_data)
+            
+            # Run the automation script with existing page
+            await run_automation_async(self.page, progress_callback)
+            
         except Exception as e:
-            logger.error(f"Demo flow failed: {str(e)}")
-            await self.send_status("error", f"Demo flow failed: {str(e)}")
+            logger.error(f"Route automation failed: {str(e)}")
+            await self.send_status("error", f"Route automation failed: {str(e)}")
             raise
+
+    # =============================================================================
+    # OLD DEMO FLOW - COMMENTED OUT FOR TESTING PURPOSES
+    # Uncomment this method if you want to test the original demo flow
+    # =============================================================================
+    
+    # async def run_demo_flow(self):
+    #     """Run a demo flow that inserts 7 route records.
+    #
+    #     This is used when a task does not provide structured steps. The flow opens
+    #     the demo site and performs route insertions, which should be visible via VNC.
+    #     """
+    #     try:
+    #         # Navigate to the sample app
+    #         await self.page.goto("https://angularformadd.netlify.app/")
+    #
+    #         # Define 7 route records to insert
+    #         routes = [
+    #             {"start_location": "New York", "end_location": "Boston", "price": "45.99"},
+    #             {"start_location": "Los Angeles", "end_location": "San Francisco", "price": "89.50"},
+    #             {"start_location": "Chicago", "end_location": "Detroit", "price": "67.25"},
+    #             {"start_location": "Miami", "end_location": "Orlando", "price": "34.75"},
+    #             {"start_location": "Seattle", "end_location": "Portland", "price": "52.00"},
+    #             {"start_location": "Houston", "end_location": "Dallas", "price": "41.30"},
+    #             {"start_location": "Denver", "end_location": "Phoenix", "price": "73.85"}
+    #         ]
+    #
+    #         # Insert all 7 routes
+    #         for i, route in enumerate(routes, 1):
+    #             await self.send_status("running", f"Adding route {i}/7: {route['start_location']} → {route['end_location']}")
+    #             
+    #             # Click the "Add New Route" button
+    #             await self.page.get_by_role("button", name="+ Add New Route").click()
+    #             
+    #             # Fill in the start location
+    #             await self.page.get_by_role("textbox", name="Enter start location").fill(route["start_location"])
+    #             
+    #             # Fill in the end location  
+    #             await self.page.get_by_role("textbox", name="Enter end location").fill(route["end_location"])
+    #             
+    #             # Fill in the price
+    #             await self.page.get_by_placeholder("0.00").fill(route["price"])
+    #             
+    #             # Save the route
+    #             await self.page.get_by_role("button", name="Save Route").click()
+    #             
+    #             # Small delay to see the action and allow UI to update
+    #             await asyncio.sleep(1)
+    #
+    #         # Final status update
+    #         await self.send_status("running", f"Successfully added all {len(routes)} routes!")
+    #         
+    #         # Click the FAB button (⚡) to show the results
+    #         await self.page.get_by_role("button", name="⚡").click()
+    #         
+    #         # Take a screenshot to capture the final state
+    #         screenshot_path = f"/screenshots/demo_result_{self.session_id}.png"
+    #         await self.page.screenshot(path=screenshot_path)
+    #         logger.info(f"Screenshot saved: {screenshot_path}")
+    #         await self.send_status("running", f"Screenshot captured: {screenshot_path}")
+    #         
+    #         # Wait to ensure all UI updates are visible
+    #         await asyncio.sleep(3)
+    #
+    #     except Exception as e:
+    #         logger.error(f"Demo flow failed: {str(e)}")
+    #         await self.send_status("error", f"Demo flow failed: {str(e)}")
+    #         raise
     
     async def pause(self):
         """Pause automation"""
