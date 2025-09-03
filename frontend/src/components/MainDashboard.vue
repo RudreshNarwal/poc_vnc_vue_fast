@@ -71,31 +71,31 @@
           >
             <input type="file" ref="fileInput" @change="handleFileUpload" accept=".csv,.xlsx,.xls" class="hidden" />
             
-            <div v-if="!fileState.uploaded">
+            <div v-if="!currentFileState.uploaded">
               <div class="mx-auto mb-2 w-12 h-12 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center">
                   <svg class="w-5 h-5 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
               </div>
               <div class="text-sm text-gray-700">Drop CSV/Excel or <span class="text-blue-600 font-medium">browse</span></div>
               <div class="text-[10px] text-gray-500 mt-1">Requires: start_location, end_location, price</div>
             </div>
-            <div v-if="fileState.uploaded && fileState.validating">
+            <div v-if="currentFileState.uploaded && currentFileState.validating">
               <div class="mx-auto mb-2 w-12 h-12 rounded-full bg-blue-100 border border-blue-200 flex items-center justify-center">
                   <svg class="w-5 h-5 text-blue-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4"/></svg>
               </div>
               <div class="text-sm text-gray-700">Validating file...</div>
             </div>
-            <div v-if="fileState.uploaded && fileState.valid">
+            <div v-if="currentFileState.uploaded && currentFileState.valid">
               <div class="mx-auto mb-2 w-12 h-12 rounded-full bg-emerald-100 border border-emerald-200 flex items-center justify-center">
                   <svg class="w-5 h-5 text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4"/></svg>
               </div>
               <div class="text-sm text-gray-700">File uploaded and validated!</div>
-              <div class="text-xs text-gray-500 mt-1">Total rows: {{ fileState.totalRows }}</div>
+              <div class="text-xs text-gray-500 mt-1">Total rows: {{ currentFileState.totalRows }}</div>
             </div>
-            <div v-if="fileState.uploaded && fileState.error">
+            <div v-if="currentFileState.uploaded && currentFileState.error">
               <div class="mx-auto mb-2 w-12 h-12 rounded-full bg-rose-100 border border-rose-200 flex items-center justify-center">
                   <svg class="w-5 h-5 text-rose-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"/></svg>
               </div>
-              <div class="text-sm text-gray-700">{{ fileState.errorMessage }}</div>
+              <div class="text-sm text-gray-700">{{ currentFileState.errorMessage }}</div>
             </div>
           </div>
         </section>
@@ -217,15 +217,37 @@ const waitBetween = ref(0)
 // File upload state
 const fileInput = ref(null)
 const isDragging = ref(false)
-const fileState = reactive({
-  uploaded: false,
-  validating: false,
-  valid: false,
-  error: false,
-  errorMessage: '',
-  filename: '',
-  originalName: '',
-  totalRows: 0,
+const taskFileMap = reactive({})
+
+const currentFileState = computed(() => {
+  const tId = selectedTaskId.value
+  if (!tId) {
+    return {
+      uploaded: false,
+      validating: false,
+      valid: false,
+      error: false,
+      errorMessage: '',
+      filename: '',
+      originalName: '',
+      totalRows: 0,
+      record: null,
+    }
+  }
+  if (!taskFileMap[tId]) {
+    taskFileMap[tId] = {
+      uploaded: false,
+      validating: false,
+      valid: false,
+      error: false,
+      errorMessage: '',
+      filename: '',
+      originalName: '',
+      totalRows: 0,
+      record: null,
+    }
+  }
+  return taskFileMap[tId]
 })
 
 // Helpers
@@ -268,10 +290,26 @@ const connectWebSocket = () => {
   }
 }
 
+const hasFileRequirement = (task) => {
+  if (!task?.prerequisites) return false
+  return task.prerequisites.some(p => p.type === 'file_upload' && p.required)
+}
+
 const startAutomation = async () => {
   try {
     if (!selectedTaskId.value) return
-    const resp = await axios.post(`/api/automation/execute/${selectedTaskId.value}`)
+
+    const body = {}
+    if (hasFileRequirement(currentTask.value)) {
+      const fileId = currentFileState.value.record?.id
+      if (!fileId) {
+        alert('This task requires a data file. Please upload a CSV/Excel file first.')
+        return
+      }
+      body.file_id = fileId
+    }
+
+    const resp = await axios.post(`/api/automation/execute/${selectedTaskId.value}`, body)
     sessionId.value = resp.data.session_id
     isRunning.value = true
     status.value = 'starting'
@@ -279,7 +317,7 @@ const startAutomation = async () => {
     connectWebSocket()
   } catch (e) {
     console.error('Failed to start automation', e)
-    alert('Failed to start automation')
+    alert(e.response?.data?.detail || 'Failed to start automation')
   }
 }
 
@@ -307,27 +345,37 @@ const stopAutomation = async () => {
 }
 
 const processFile = async (file) => {
-  if (!file) return;
+  if (!file) return
 
-  fileState.uploaded = true;
-  fileState.validating = true;
-  fileState.error = false;
-  isDragging.value = false;
+  const tId = selectedTaskId.value
+  if (!tId) {
+    alert('Select a task first')
+    return
+  }
 
-  const formData = new FormData();
-  formData.append('file', file);
+  const state = currentFileState.value
+  state.uploaded = true
+  state.validating = true
+  state.error = false
+  isDragging.value = false
+
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('task_id', String(tId))
 
   try {
-    const { data } = await axios.post('/api/files/upload-and-validate', formData);
-    fileState.validating = false;
-    fileState.valid = true;
-    fileState.filename = data.filename;
-    fileState.originalName = data.original_filename;
-    fileState.totalRows = data.validation.total_rows;
+    const { data } = await axios.post('/api/files/upload', formData)
+    state.validating = false
+    state.valid = data.status === 'validated'
+    state.filename = data.filename
+    state.originalName = data.original_filename
+    state.totalRows = data.validation_results?.total_rows || 0
+    state.record = data
   } catch (e) {
-    fileState.validating = false;
-    fileState.error = true;
-    fileState.errorMessage = e.response?.data?.detail || 'An unknown error occurred.';
+    state.validating = false
+    state.error = true
+    state.errorMessage = e.response?.data?.detail || 'An unknown error occurred.'
+    state.record = null
   }
 };
 
@@ -343,14 +391,16 @@ const handleFileDrop = (event) => {
 const triggerFileInput = () => fileInput.value.click();
 
 const clearFile = () => {
-  fileState.uploaded = false;
-  fileState.validating = false;
-  fileState.valid = false;
-  fileState.error = false;
-  fileState.errorMessage = '';
-  fileState.filename = '';
-  fileState.originalName = '';
-  fileState.totalRows = 0;
+  const state = currentFileState.value
+  state.uploaded = false
+  state.validating = false
+  state.valid = false
+  state.error = false
+  state.errorMessage = ''
+  state.filename = ''
+  state.originalName = ''
+  state.totalRows = 0
+  state.record = null
 };
 
 // Toolbar dummy actions

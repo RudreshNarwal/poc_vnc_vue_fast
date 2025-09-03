@@ -56,9 +56,19 @@ async def upload_and_validate(
             file_name=unique_filename,
             content_type=file.content_type
         )
+
+        # Determine a local path for validation
+        validation_path = storage_path
+        temp_download_path = None
+        if settings.STORAGE_BACKEND == "minio":
+            # Download the uploaded object to a temporary local file for validation
+            with NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_dl:
+                temp_download_path = tmp_dl.name
+            storage.download_file(storage_path, temp_download_path)
+            validation_path = temp_download_path
         
-        # Validate data
-        validation_results = load_and_validate_records(storage_path)
+        # Validate data using a local filesystem path
+        validation_results = load_and_validate_records(validation_path)
         
         # Create DB record
         file_record = FileModel(
@@ -66,7 +76,7 @@ async def upload_and_validate(
             original_filename=file.filename,
             storage_path=storage_path,
             file_type=file_extension.strip('.'),
-            status="validated" if validation_results["is_valid"] else "error",
+            status="validated" if (validation_results and validation_results.get("total_rows", 0) > 0) else "error",
             validation_results=validation_results,
             task_id=task_id
         )
@@ -86,9 +96,12 @@ async def upload_and_validate(
             detail=f"An error occurred during file processing: {e}"
         )
     finally:
-        # Clean up the temporary file
+        # Clean up the temporary files
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+        # Also remove any temporary download used for validation (MinIO)
+        if 'temp_download_path' in locals() and temp_download_path and os.path.exists(temp_download_path):
+            os.remove(temp_download_path)
 
 @router.post("/upload-and-validate")
 async def upload_and_validate_file(file: UploadFile = File(...)):

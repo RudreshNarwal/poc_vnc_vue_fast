@@ -9,7 +9,7 @@ from typing import Dict, Any
 
 from app.models.database import get_db
 from app.models.task import Task
-from app.models.execution import Execution, ExecutionCreate, ExecutionResponse
+from app.models.execution import Execution
 from app.models.file import File as FileModel
 from app.services.automation import AutomationEngine, automation_engines, websocket_manager
 
@@ -19,6 +19,7 @@ router = APIRouter()
 
 class ExecuteRequest(BaseModel):
     file_id: Optional[int] = None
+
 
 @router.post("/execute/{task_id}")
 async def execute_task(
@@ -39,63 +40,101 @@ async def execute_task(
                 detail=f"Task {task_id} not found"
             )
         
-        # Generate session ID
-        session_id = str(uuid.uuid4())
+        # Check if task requires a file
+        has_file_prerequisite = False
+        if task.prerequisites:
+            for prereq in task.prerequisites:
+                if prereq.get("type") == "file_upload" and prereq.get("required"):
+                    has_file_prerequisite = True
+                    break
         
-        file_id = request.file_id if request else None
+        # Validate file requirement
         file_record = None
-        if file_id:
+        file_id = request.file_id if request else None
+
+        if has_file_prerequisite:
+            if not file_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This task requires a file upload. Please upload a CSV/Excel file first."
+                )
+            
+            # Get file record
             result = await db.execute(select(FileModel).where(FileModel.id == file_id))
             file_record = result.scalar_one_or_none()
+            
             if not file_record:
-                raise HTTPException(status_code=404, detail=f"File with id {file_id} not found.")
-
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"File with id {file_id} not found"
+                )
+            
+            # Verify file is validated
+            if file_record.status != "validated":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"File is not validated. Status: {file_record.status}"
+                )
+        
+        # Generate unique session ID
+        session_id = str(uuid.uuid4())
+        
         # Create execution record
         execution = Execution(
             session_id=session_id,
             task_id=task_id,
             status="pending",
             total_steps=len(task.steps) if task.steps else 0,
-            file_id=file_id
+            file_id=file_id if file_id else None
         )
         
         db.add(execution)
         await db.commit()
         await db.refresh(execution)
         
-        # Create automation engine
+        # Create automation engine for this session
         engine = AutomationEngine(session_id, websocket_manager)
         automation_engines[session_id] = engine
         
-        # Convert task data
+        # Prepare task data
         task_data = {
             "id": task.id,
             "name": task.name,
+            "description": task.description,
             "steps": task.steps,
-            "script_path": task.script_path
+            "script_path": task.script_path,
+            "prerequisites": task.prerequisites
         }
         
         # Start automation in background
-        background_tasks.add_task(engine.execute_task, task_data, file=file_record)
+        background_tasks.add_task(
+            engine.execute_task, 
+            task_data, 
+            file=file_record
+        )
         
-        logger.info(f"Started automation for task {task_id}, session {session_id}")
+        logger.info(f"Started automation for task '{task.name}' (ID: {task_id}), session: {session_id}")
         
         return {
             "session_id": session_id,
             "task_id": task_id,
+            "task_name": task.name,
             "status": "started",
-            "message": "Automation started successfully"
+            "message": f"Automation '{task.name}' started successfully",
+            "has_file": file_record is not None,
+            "file_name": file_record.original_filename if file_record else None
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to start automation for task {task_id}: {str(e)}")
+        logger.error(f"Failed to start automation for task {task_id}: {str(e)}", exc_info=True)
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to start automation: {str(e)}"
         )
+
 
 @router.post("/pause/{session_id}")
 async def pause_automation(session_id: str):
@@ -110,7 +149,11 @@ async def pause_automation(session_id: str):
         engine = automation_engines[session_id]
         await engine.pause()
         
-        return {"message": "Automation paused", "session_id": session_id}
+        return {
+            "message": "Automation paused",
+            "session_id": session_id,
+            "status": "paused"
+        }
         
     except HTTPException:
         raise
@@ -120,6 +163,7 @@ async def pause_automation(session_id: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to pause automation: {str(e)}"
         )
+
 
 @router.post("/resume/{session_id}")
 async def resume_automation(session_id: str):
@@ -134,7 +178,11 @@ async def resume_automation(session_id: str):
         engine = automation_engines[session_id]
         await engine.resume()
         
-        return {"message": "Automation resumed", "session_id": session_id}
+        return {
+            "message": "Automation resumed",
+            "session_id": session_id,
+            "status": "running"
+        }
         
     except HTTPException:
         raise
@@ -144,6 +192,7 @@ async def resume_automation(session_id: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to resume automation: {str(e)}"
         )
+
 
 @router.post("/stop/{session_id}")
 async def stop_automation(session_id: str):
@@ -158,10 +207,14 @@ async def stop_automation(session_id: str):
         engine = automation_engines[session_id]
         await engine.stop()
         
-        # Clean up
+        # Clean up engine from registry
         del automation_engines[session_id]
         
-        return {"message": "Automation stopped", "session_id": session_id}
+        return {
+            "message": "Automation stopped",
+            "session_id": session_id,
+            "status": "stopped"
+        }
         
     except HTTPException:
         raise
@@ -171,6 +224,7 @@ async def stop_automation(session_id: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to stop automation: {str(e)}"
         )
+
 
 @router.get("/status/{session_id}")
 async def get_automation_status(
@@ -194,15 +248,21 @@ async def get_automation_status(
         # Check if engine is still running
         is_active = session_id in automation_engines
         
+        # Get task details
+        result = await db.execute(select(Task).where(Task.id == execution.task_id))
+        task = result.scalar_one_or_none()
+        
         return {
             "session_id": session_id,
+            "task_name": task.name if task else "Unknown",
             "status": execution.status,
             "current_step": execution.current_step,
             "total_steps": execution.total_steps,
             "is_active": is_active,
             "start_time": execution.start_time,
             "end_time": execution.end_time,
-            "error_message": execution.error_message
+            "error_message": execution.error_message,
+            "file_id": execution.file_id
         }
         
     except HTTPException:
@@ -212,4 +272,31 @@ async def get_automation_status(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get status: {str(e)}"
+        )
+
+
+@router.get("/active-sessions")
+async def get_active_sessions():
+    """Get all active automation sessions"""
+    try:
+        active_sessions = []
+        
+        for session_id, engine in automation_engines.items():
+            active_sessions.append({
+                "session_id": session_id,
+                "is_running": engine.is_running,
+                "is_paused": engine.is_paused
+            })
+        
+        return {
+            "total_active": len(active_sessions),
+            "sessions": active_sessions,
+            "max_parallel": 5  # Configurable based on system capacity
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get active sessions: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get active sessions: {str(e)}"
         )

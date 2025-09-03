@@ -1,22 +1,16 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, BackgroundTasks, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
-import asyncio
-import json
-import uuid
 import os
 from datetime import datetime
-from typing import Dict, List, Optional
 import logging
 
 from app.config import settings
 from app.models.database import init_db, AsyncSessionLocal
 from app.models.task import Task
 from sqlalchemy import select
-from app.services.automation import AutomationEngine
 from app.api import tasks, automation, files, websocket
-# from app.migrations.add_file_management import apply_migrations #<-- REMOVE
 
 # Configure logging
 logging.basicConfig(
@@ -31,33 +25,56 @@ async def lifespan(app: FastAPI):
     # On startup
     await init_db()
     
-    # Apply database migrations - REMOVED from startup
-    # await apply_migrations() 
-    
-    # Seed initial data
+    # Seed initial tasks
     async with AsyncSessionLocal() as db:
-        result = await db.execute(select(Task).where(Task.name == "Route Addition Automation"))
+        # Task 1: Legacy Route Addition
+        result = await db.execute(
+            select(Task).where(Task.name == "Route Addition Automation")
+        )
         if not result.scalar_one_or_none():
-            new_task = Task(
+            task1 = Task(
                 name="Route Addition Automation",
-                description="Upload a CSV/Excel file to add multiple routes to the system.",
+                description="Legacy automation - Adds a few hardcoded routes for demonstration.",
                 status="ready",
                 script_path="app.automation_scripts.route_automation:run_automation",
+                prerequisites=[]
+            )
+            db.add(task1)
+            logger.info("Created Task 1: Route Addition Automation")
+        
+        # Task 2: Upload CSV Test
+        result = await db.execute(
+            select(Task).where(Task.name == "Upload CSV Test")
+        )
+        if not result.scalar_one_or_none():
+            task2 = Task(
+                name="Upload CSV Test",
+                description="New automation - Upload and process CSV data to automatically add routes in bulk.",
+                status="ready",
+                script_path="app.automation_scripts.upload_csv_automation:run_automation",
                 prerequisites=[{
                     "type": "file_upload",
-                    "name": "routes_file",
-                    "description": "A .csv or .xlsx file with 'start_location', 'end_location', and 'price' columns.",
+                    "name": "csv_file",
+                    "description": "A .csv or .xlsx file with 'start_location', 'end_location', and 'price' columns for bulk route addition.",
                     "required": True
                 }]
             )
-            db.add(new_task)
-            await db.commit()
+            db.add(task2)
+            logger.info("Created Task 2: Upload CSV Test")
+        
+        await db.commit()
+        logger.info("Database seeding completed")
+    
     yield
     # On shutdown
-    # (any cleanup logic here)
+    logger.info("Application shutting down...")
 
 # Create FastAPI app
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="Browser Automation Studio",
+    version="2.0.0",
+    lifespan=lifespan
+)
 
 # CORS
 app.add_middleware(
@@ -69,6 +86,9 @@ app.add_middleware(
 )
 
 # Static files
+os.makedirs(settings.screenshot_dir, exist_ok=True)
+os.makedirs(settings.upload_dir, exist_ok=True)
+
 app.mount("/screenshots", StaticFiles(directory=settings.screenshot_dir), name="screenshots")
 app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
 
@@ -78,13 +98,25 @@ app.include_router(automation.router, prefix="/api/automation", tags=["automatio
 app.include_router(files.router, prefix="/api/files", tags=["files"])
 app.include_router(websocket.router, prefix="/ws", tags=["websocket"])
 
+@app.get("/")
+async def root():
+    return {
+        "name": "Browser Automation Studio",
+        "version": "2.0.0",
+        "status": "operational",
+        "tasks_enabled": True,
+        "vnc_enabled": True
+    }
+
 @app.get("/api/health")
 async def health_check():
     return {
         "status": "healthy",
         "timezone": settings.timezone,
         "vnc_host": settings.vnc_host,
-        "timestamp": datetime.now().isoformat()
+        "vnc_display": settings.vnc_display,
+        "timestamp": datetime.now().isoformat(),
+        "tasks_available": 2
     }
 
 @app.get("/api/vnc/config")
@@ -94,7 +126,7 @@ async def get_vnc_config(request: Request):
     # Dynamic hostname detection
     host = request.headers.get('host', 'localhost').split(':')[0]
     
-    # In production, you might want to use an environment variable
+    # In production, use environment variable
     vnc_host = os.getenv('VNC_PUBLIC_HOST', host)
     
     # For Docker internal communication
@@ -102,9 +134,9 @@ async def get_vnc_config(request: Request):
         vnc_host = 'vnc'
     
     return {
-        "url": f"ws://{vnc_host}:7900/websockify",  # noVNC websockify endpoint
-        "vnc_url": f"http://{vnc_host}:7900/vnc.html",  # noVNC HTTP interface
-        "password": None,  # For dev only
+        "url": f"ws://{vnc_host}:7900/websockify",
+        "vnc_url": f"http://{vnc_host}:7900/vnc.html",
+        "password": None,  # No password for dev
         "autoconnect": True,
         "view_only": False,
         "show_dot_cursor": True,
@@ -121,11 +153,10 @@ async def test_browser():
         logger.info("Starting browser test on VNC display")
         
         async with async_playwright() as p:
-            # Launch browser on VNC display
             browser = await p.chromium.launch(
-                headless=False,  # MUST be False to see in VNC
+                headless=False,
                 args=[
-                    '--display=:1',  # Use VNC display
+                    '--display=:1',
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--start-maximized'
@@ -135,9 +166,7 @@ async def test_browser():
             page = await browser.new_page()
             await page.goto('https://www.google.com')
             
-            logger.info("Browser opened Google - should be visible in VNC")
-            
-            # Keep browser open for 5 seconds
+            logger.info("Browser opened Google - visible in VNC")
             await asyncio.sleep(5)
             
             await browser.close()
