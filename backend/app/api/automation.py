@@ -16,7 +16,21 @@ from app.services.automation import AutomationEngine, automation_engines, websoc
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-
+@router.post("/end-session/{session_id}")
+async def end_session(session_id: str):
+    """Fully close the browser and VNC session, freeing resources."""
+    try:
+        if session_id not in automation_engines:
+            # If engine already gone, consider it already closed
+            return {"message": "Session already closed", "session_id": session_id}
+        engine = automation_engines[session_id]
+        await engine.end_session()
+        # Remove engine from registry
+        del automation_engines[session_id]
+        return {"message": "Session closed", "session_id": session_id}
+    except Exception as e:
+        logger.error(f"Failed to close session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to close session: {str(e)}")
 class ExecuteRequest(BaseModel):
     file_id: int
 
@@ -150,7 +164,7 @@ async def resume_automation(session_id: str):
 
 @router.post("/stop/{session_id}")
 async def stop_automation(session_id: str):
-    """Stop automation"""
+    """Stop automation but keep the VNC session/browser open for manual control"""
     try:
         if session_id not in automation_engines:
             raise HTTPException(
@@ -161,10 +175,8 @@ async def stop_automation(session_id: str):
         engine = automation_engines[session_id]
         await engine.stop(engine.execution_id)
         
-        # Clean up
-        del automation_engines[session_id]
-        
-        return {"message": "Automation stopped", "session_id": session_id}
+        # IMPORTANT: do NOT delete the engine here so manual control remains available
+        return {"message": "Automation stopped (manual control available)", "session_id": session_id}
         
     except HTTPException:
         raise
@@ -194,7 +206,7 @@ async def get_automation_status(
                 detail=f"Execution {session_id} not found"
             )
         
-        # Check if engine is still running
+        # Check if engine is still present (manual control may still be available even if not running)
         is_active = session_id in automation_engines
         
         return {

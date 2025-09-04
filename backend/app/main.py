@@ -15,7 +15,7 @@ from app.models.database import init_db, AsyncSessionLocal
 from app.models.task import Task
 from sqlalchemy import select
 from app.services.automation import AutomationEngine
-from app.api import tasks, automation, files, websocket
+from app.api import tasks, automation, files, websocket, sessions, test_browser
 
 
 # Configure logging
@@ -73,6 +73,8 @@ app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads"
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(automation.router, prefix="/api/automation", tags=["automation"])
 app.include_router(files.router, prefix="/api/files", tags=["files"])
+app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
+app.include_router(test_browser.router, prefix="/api/test-browser", tags=["test-browser"])
 app.include_router(websocket.router, prefix="/ws", tags=["websocket"])
 
 @app.get("/api/health")

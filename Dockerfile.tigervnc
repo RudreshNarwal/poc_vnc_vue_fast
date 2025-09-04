@@ -1,0 +1,48 @@
+FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+
+USER root
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/New_York
+WORKDIR /app
+
+# Install TigerVNC and desktop dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    tigervnc-standalone-server \
+    tigervnc-common \
+    tigervnc-tools \
+    fluxbox \
+    supervisor \
+    dbus-x11 \
+    xfonts-base \
+    xauth \
+    netcat-openbsd \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install noVNC and websockify
+RUN git clone --depth 1 https://github.com/novnc/noVNC.git /opt/noVNC && \
+    git clone --depth 1 https://github.com/novnc/websockify.git /opt/noVNC/utils/websockify
+
+# Python dependencies (reuse backend reqs + add session manager deps)
+COPY backend/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt && \
+    pip install --no-cache-dir redis psutil httpx websockify
+
+# Create required directories
+RUN mkdir -p /var/log/supervisor /app/uploads /app/screenshots /root/.vnc
+
+# Configure xstartup to launch Fluxbox for each VNC session
+RUN printf '%s\n' '#!/bin/sh' 'unset SESSION_MANAGER' 'unset DBUS_SESSION_BUS_ADDRESS' 'exec startfluxbox' > /root/.vnc/xstartup && \
+    chmod +x /root/.vnc/xstartup
+
+# Copy application and supervisor config
+COPY backend/ /app/
+COPY session_manager.py /app/session_manager.py
+COPY supervisord.tigervnc.conf /etc/supervisor/conf.d/supervisord.conf
+
+EXPOSE 8000 8001 5901-6000 7901-8000
+
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

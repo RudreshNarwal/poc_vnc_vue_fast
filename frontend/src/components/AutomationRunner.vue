@@ -69,12 +69,7 @@
             <p class="text-sm text-gray-600">Live view of automation execution</p>
           </div>
           <div class="p-0 h-96 lg:h-[600px] bg-black">
-            <BrowserViewport
-              :session-id="sessionId"
-              :is-running="isRunning"
-              @pause="pauseAutomation"
-              @resume="resumeAutomation"
-            />
+            <BrowserViewport :session-id="sessionId" :is-running="isRunning" @pause="onPause" @resume="onResume" />
           </div>
         </div>
       </div>

@@ -1,12 +1,13 @@
 from typing import Optional
 from pydantic_settings import BaseSettings
+from pydantic import AliasChoices, Field
 
 class Settings(BaseSettings):
     # App settings
     app_name: str = "AutomationStudio"
     app_env: str = "development"
     debug: bool = True
-    secret_key: str = "your-secret-key-change-this-in-production"
+    secret_key: str = "4dc56f97778b03d1e25f79ca5dcdea8da7fe21b6d216e0787bba5c53d040f567"
     timezone: str = "America/New_York"
     
     # Database settings
@@ -39,6 +40,10 @@ class Settings(BaseSettings):
     
     # WebSocket settings
     ws_heartbeat_interval: int = 30
+
+    # Multi-session settings
+    enable_multi_session: bool = Field(default=False, validation_alias=AliasChoices('enable_multi_session', 'ENABLE_MULTI_SESSION'))
+    session_manager_url: str = Field(default="http://localhost:8001", validation_alias=AliasChoices('session_manager_url', 'SESSION_MANAGER_URL'))
 
     class Config:
         env_file = ".env"

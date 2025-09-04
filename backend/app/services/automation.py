@@ -5,6 +5,7 @@ from datetime import datetime
 import pytz
 from typing import Dict, Any, Optional
 import logging
+import httpx
 
 from app.config import settings
 from tempfile import NamedTemporaryFile
@@ -52,6 +53,8 @@ class AutomationEngine:
         self.page: Optional[Page] = None
         self.is_paused = False
         self.is_running = False
+        self.vnc_session: Optional[Dict[str, Any]] = None
+        self.task_id: Optional[int] = None
         
         # Set timezone
         self.timezone = pytz.timezone(settings.timezone)
@@ -62,9 +65,30 @@ class AutomationEngine:
         try:
             self.playwright = await async_playwright().start()
             
+            # Determine display (single-session default or per-session)
+            display = settings.vnc_display
+            if settings.enable_multi_session:
+                try:
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.post(
+                            f"{settings.session_manager_url}/api/sessions/create",
+                            json={
+                                "user_id": self.session_id,
+                                "task_id": self.task_id,
+                                "timeout_minutes": 30
+                            },
+                            timeout=30.0
+                        )
+                        resp.raise_for_status()
+                        self.vnc_session = resp.json()
+                        display = f":{self.vnc_session['display']}"
+                except Exception as e:
+                    logger.error(f"Failed to allocate VNC session: {e}")
+                    raise
+
             # Browser launch arguments optimized for VNC
             browser_args = [
-                f'--display={settings.vnc_display}',  # CRITICAL: Use VNC display
+                f'--display={display}',  # CRITICAL: Use VNC display
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
@@ -97,8 +121,9 @@ class AutomationEngine:
             
             self.page = await context.new_page()
             
-            # Test navigation to verify it's working
-            await self.page.goto('about:blank')
+            # Show a visible page immediately so VNC is not blank
+            start_url = os.getenv('AUTOMATION_START_URL', 'https://rhobots.ai')
+            await self.page.goto(start_url)
             
             # Log browser info
             logger.info(f"Browser initialized for session {self.session_id}")
@@ -129,6 +154,12 @@ class AutomationEngine:
     async def execute_task(self, task_data: Dict[str, Any], file = None, execution_id: Optional[int] = None):
         self.is_running = True
         logger.info(f"Session {self.session_id}: Executing task '{task_data['name']}'")
+
+        # Record task id for session allocation
+        try:
+            self.task_id = int(task_data.get('id')) if task_data and task_data.get('id') is not None else None
+        except Exception:
+            self.task_id = None
 
         # Always initialize the browser so VNC displays activity
         if not await self.initialize_browser():
@@ -334,6 +365,11 @@ class AutomationEngine:
                 "status": "stopped",
                 "end_time": datetime.now(self.timezone)
             })
+        # Do NOT cleanup here to allow manual control via VNC after stopping
+        return
+
+    async def end_session(self):
+        """Fully end the session and cleanup resources (used when user closes the session)"""
         await self.cleanup()
     
     async def cleanup(self):
@@ -347,6 +383,16 @@ class AutomationEngine:
                 await self.playwright.stop()
         except Exception as e:
             logger.error(f"Cleanup error: {str(e)}")
+
+        # Destroy VNC session if allocated
+        try:
+            if settings.enable_multi_session and getattr(self, 'vnc_session', None):
+                sid = self.vnc_session.get('session_id')
+                if sid:
+                    async with httpx.AsyncClient() as client:
+                        await client.delete(f"{settings.session_manager_url}/api/sessions/{sid}", timeout=15.0)
+        except Exception as e:
+            logger.error(f"Session cleanup error: {str(e)}")
 
     async def _update_execution(self, execution_id: int, fields: Dict[str, Any]):
         """Update execution row in DB."""

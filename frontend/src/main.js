@@ -13,6 +13,7 @@ import LegacyLayout from './layouts/LegacyLayout.vue'
 
 // New main UI
 import MainDashboard from './components/MainDashboard.vue'
+import TestTigerVNC from './components/TestTigerVNC.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -25,7 +26,7 @@ const router = createRouter({
       path: '/test',
       component: LegacyLayout,
       children: [
-        { path: '', name: 'LegacyHome', component: Home },
+        { path: '', name: 'TigerVNC_Test', component: TestTigerVNC },
         { path: 'tasks', name: 'LegacyTasks', component: TaskList },
         { path: 'builder', name: 'LegacyBuilder', component: TaskBuilder },
         { path: 'runner/:taskId?', name: 'LegacyRunner', component: AutomationRunner, props: true }

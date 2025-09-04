@@ -29,6 +29,11 @@
             class="px-3.5 py-1.5 text-sm rounded-md bg-red-600 hover:bg-red-700 text-white shadow-sm"
             @click="stopAutomation"
           >Stop</button>
+          <button
+            v-if="sessionId"
+            class="px-3.5 py-1.5 text-sm rounded-md bg-gray-600 hover:bg-gray-700 text-white shadow-sm"
+            @click="closeSession"
+          >Close Session</button>
         </div>
       </div>
     </header>
@@ -164,7 +169,16 @@
                 <button class="px-2.5 py-1.5 rounded-md bg-gray-50 border border-gray-300 text-xs hover:shadow" @click="toggleFullscreen">⤢</button>
               </div>
               <div class="h-[640px] bg-black">
-                <BrowserViewport :session-id="sessionId" :is-running="isRunning" @pause="onPause" @resume="onResume" />
+                <MultiSessionBrowserViewport
+                  v-if="sessionId"
+                  :user-id="sessionId"
+                  :task-id="selectedTaskId"
+                  :is-running="isRunning"
+                  :show-resource-usage="true"
+                />
+                <div v-else class="h-full flex items-center justify-center text-gray-400 text-sm">
+                  Start the automation to view the session.
+                </div>
               </div>
             </div>
           </div>
@@ -220,7 +234,7 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
 import { useWebSocketStore } from '../stores/websocket.js'
-import BrowserViewport from './BrowserViewport.vue'
+import MultiSessionBrowserViewport from './MultiSessionBrowserViewport.vue'
 import { useUploadsStore } from '../stores/uploads.js'
 
 const wsStore = useWebSocketStore()
@@ -411,15 +425,30 @@ const stopAutomation = async () => {
     isRunning.value = false
     isPaused.value = false
     status.value = 'stopped'
-    // Clear uploaded file association for this task
+    // IMPORTANT: keep sessionId so the VNC viewport remains for manual control
+    await loadExecutions()
+  } catch (e) {
+    console.error('Failed to stop automation', e)
+  }
+}
+
+const closeSession = async () => {
+  try {
+    if (!sessionId.value) return
+    await axios.post(`/api/automation/end-session/${sessionId.value}`)
+    // Now fully clear UI state
+    sessionId.value = null
+    isRunning.value = false
+    isPaused.value = false
+    status.value = 'idle'
+    // Optionally clear uploaded file association only when closing the session
     if (selectedTaskId.value) {
       uploads.clearForTask(selectedTaskId.value)
     }
     clearFile()
-    sessionId.value = null
     await loadExecutions()
   } catch (e) {
-    console.error('Failed to stop automation', e)
+    console.error('Failed to close session', e)
   }
 }
 
