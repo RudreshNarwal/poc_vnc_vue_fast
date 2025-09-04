@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import uuid
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from app.models.database import get_db
 from app.models.task import Task
@@ -18,13 +18,13 @@ router = APIRouter()
 
 
 class ExecuteRequest(BaseModel):
-    file_id: Optional[int] = None
+    file_id: int
 
 @router.post("/execute/{task_id}")
 async def execute_task(
     task_id: int,
     background_tasks: BackgroundTasks,
-    request: Optional[ExecuteRequest] = None,
+    request: ExecuteRequest,
     db: AsyncSession = Depends(get_db)
 ):
     """Start executing an automation task"""
@@ -42,13 +42,15 @@ async def execute_task(
         # Generate session ID
         session_id = str(uuid.uuid4())
         
-        file_id = request.file_id if request else None
+        file_id = request.file_id
         file_record = None
         if file_id:
             result = await db.execute(select(FileModel).where(FileModel.id == file_id))
             file_record = result.scalar_one_or_none()
             if not file_record:
                 raise HTTPException(status_code=404, detail=f"File with id {file_id} not found.")
+            if file_record.task_id != task_id:
+                raise HTTPException(status_code=400, detail="File does not belong to this task.")
 
         # Create execution record
         execution = Execution(
@@ -65,6 +67,7 @@ async def execute_task(
         
         # Create automation engine
         engine = AutomationEngine(session_id, websocket_manager)
+        engine.execution_id = execution.id
         automation_engines[session_id] = engine
         
         # Convert task data
@@ -76,7 +79,7 @@ async def execute_task(
         }
         
         # Start automation in background
-        background_tasks.add_task(engine.execute_task, task_data, file=file_record)
+        background_tasks.add_task(engine.execute_task, task_data, file=file_record, execution_id=execution.id)
         
         logger.info(f"Started automation for task {task_id}, session {session_id}")
         
@@ -108,7 +111,7 @@ async def pause_automation(session_id: str):
             )
         
         engine = automation_engines[session_id]
-        await engine.pause()
+        await engine.pause(engine.execution_id)
         
         return {"message": "Automation paused", "session_id": session_id}
         
@@ -132,7 +135,7 @@ async def resume_automation(session_id: str):
             )
         
         engine = automation_engines[session_id]
-        await engine.resume()
+        await engine.resume(engine.execution_id)
         
         return {"message": "Automation resumed", "session_id": session_id}
         
@@ -156,7 +159,7 @@ async def stop_automation(session_id: str):
             )
         
         engine = automation_engines[session_id]
-        await engine.stop()
+        await engine.stop(engine.execution_id)
         
         # Clean up
         del automation_engines[session_id]

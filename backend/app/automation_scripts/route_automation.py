@@ -6,7 +6,8 @@ logger = logging.getLogger(__name__)
 
 async def run_automation_async(
     page,  # Use existing page from AutomationEngine
-    progress_callback: Callable[[Dict[str, Any]], None]
+    progress_callback: Callable[[Dict[str, Any]], None],
+    records
 ):
     """
     Async function for the Route Addition Automation script.
@@ -15,23 +16,16 @@ async def run_automation_async(
         page: The Playwright page instance from AutomationEngine.
         progress_callback: A function to send real-time progress updates.
     """
-    # Define 7 hardcoded route records (same as run_demo_flow)
-    records = [
-        {"start_location": "New York", "end_location": "Boston", "price": "45.99"},
-        {"start_location": "Los Angeles", "end_location": "San Francisco", "price": "89.50"},
-        {"start_location": "Chicago", "end_location": "Detroit", "price": "67.25"},
-        {"start_location": "Miami", "end_location": "Orlando", "price": "34.75"},
-        {"start_location": "Seattle", "end_location": "Portland", "price": "52.00"},
-        {"start_location": "Houston", "end_location": "Dallas", "price": "41.30"},
-    ]
     
+    if not records:
+        raise ValueError("No records provided.")
     total_records = len(records)
     processed_count = 0
     success_count = 0
     
     await progress_callback({
         "status": "running",
-        "message": f"Starting automation for {total_records} hardcoded records.",
+        "message": f"Starting automation for {total_records} records.",
         "processed_count": processed_count,
         "total_records": total_records,
         "success_count": success_count
@@ -52,7 +46,7 @@ async def run_automation_async(
                     raise ValueError("Record is missing required fields.")
 
                 await progress_callback({
-                    "message": f"Adding route {i}/7: {start_location} → {end_location}",
+                    "message": f"Adding route {i}/{total_records}: {start_location} → {end_location}",
                     "processed_count": i,
                     "success_count": success_count
                 })
@@ -123,5 +117,3 @@ async def run_automation_async(
             "error": str(e)
         })
         raise
-
-

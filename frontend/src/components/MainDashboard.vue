@@ -170,8 +170,28 @@
           </div>
         </div>
 
-        <!-- Bottom run history bar -->
-        <div class="px-5 py-3 border-t border-gray-200 text-xs text-gray-600 bg-white">Run History</div>
+        <!-- Bottom run history panel -->
+        <div class="px-5 py-3 border-t border-gray-200 bg-white">
+          <div class="max-w-5xl mx-auto">
+            <div class="flex items-center justify-between">
+              <div class="text-sm font-medium text-gray-900">Run History</div>
+              <button class="text-xs px-2 py-1 rounded-md bg-gray-100 hover:bg-gray-200 border border-gray-300 text-gray-700" @click="loadExecutions">Refresh</button>
+            </div>
+            <div v-if="executions.length === 0" class="text-xs text-gray-500 mt-2">No runs yet.</div>
+            <div v-else class="mt-2 divide-y divide-gray-200">
+              <div v-for="exec in executions" :key="exec.id" class="py-2 text-xs text-gray-700 flex items-center justify-between">
+                <div class="flex flex-wrap items-center gap-3">
+                  <span :class="statusPill(exec.status)" class="px-2 py-0.5 rounded-full capitalize">{{ exec.status }}</span>
+                  <span>Steps: {{ exec.current_step }}/{{ exec.total_steps }}</span>
+                  <span v-if="exec.start_time">Start: {{ new Date(exec.start_time).toLocaleString() }}</span>
+                  <span v-if="exec.end_time">End: {{ new Date(exec.end_time).toLocaleString() }}</span>
+                  <span v-if="exec.error_message" class="text-rose-600">Error: {{ exec.error_message }}</span>
+                </div>
+                <div class="text-[10px] text-gray-500">Exec ID: {{ exec.id }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
     </div>
 
@@ -197,7 +217,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
 import { useWebSocketStore } from '../stores/websocket.js'
 import BrowserViewport from './BrowserViewport.vue'
@@ -226,6 +246,18 @@ const isRunning = ref(false)
 const isPaused = ref(false)
 const status = ref('idle')
 const currentStep = ref(0)
+
+// Executions (run history)
+const executions = ref([])
+const loadExecutions = async () => {
+  try {
+    if (!selectedTaskId.value) return
+    const { data } = await axios.get(`/api/tasks/${selectedTaskId.value}/executions`)
+    executions.value = data
+  } catch (e) {
+    console.error('Failed to load executions', e)
+  }
+}
 
 // Settings (local for UI only)
 const addressBar = ref('about:blank')
@@ -270,6 +302,9 @@ const stepClass = (idx) => {
 const selectTask = (id) => {
   selectedTaskId.value = id
 }
+watch(selectedTaskId, () => {
+  loadExecutions()
+})
 
 const connectWebSocket = () => {
   if (!sessionId.value) return
@@ -282,6 +317,7 @@ const connectWebSocket = () => {
       if (data.status === 'completed' || data.status === 'error' || data.status === 'stopped') {
         isRunning.value = false
         isPaused.value = false
+        loadExecutions()
       }
       if (data.status === 'paused') isPaused.value = true
       else if (data.status === 'running') isPaused.value = false
@@ -295,7 +331,16 @@ const connectWebSocket = () => {
 const startAutomation = async () => {
   try {
     if (!selectedTaskId.value) return
-    const resp = await axios.post(`/api/automation/execute/${selectedTaskId.value}`)
+    const fileResp = uploads.getByTaskId(selectedTaskId.value)
+    if (!fileResp?.id) {
+      openErrorDialog('Please upload a CSV/XLSX for this task before starting automation.')
+      return
+    }
+    const resp = await axios.post(
+      `/api/automation/execute/${selectedTaskId.value}`,
+      { file_id: fileResp.id },
+      { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' } }
+    )
     sessionId.value = resp.data.session_id
     isRunning.value = true
     status.value = 'starting'
@@ -303,7 +348,7 @@ const startAutomation = async () => {
     connectWebSocket()
   } catch (e) {
     console.error('Failed to start automation', e)
-    alert('Failed to start automation')
+    openErrorDialog(e.response?.data?.detail || 'Failed to start automation')
   }
 }
 
@@ -327,7 +372,17 @@ const stopAutomation = async () => {
     await axios.post(`/api/automation/stop/${sessionId.value}`)
     isRunning.value = false
     isPaused.value = false
-  } catch {}
+    status.value = 'stopped'
+    // Clear uploaded file association for this task
+    if (selectedTaskId.value) {
+      uploads.clearForTask(selectedTaskId.value)
+    }
+    clearFile()
+    sessionId.value = null
+    await loadExecutions()
+  } catch (e) {
+    console.error('Failed to stop automation', e)
+  }
 }
 
 const processFile = async (file) => {

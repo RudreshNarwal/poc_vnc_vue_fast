@@ -7,6 +7,7 @@ import logging
 
 from app.models.database import get_db
 from app.models.task import Task, TaskCreate, TaskUpdate, TaskResponse
+from app.models.execution import Execution, ExecutionResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -176,4 +177,26 @@ async def delete_task(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete task: {str(e)}"
+        )
+
+@router.get("/{task_id}/executions", response_model=List[ExecutionResponse])
+async def list_task_executions(
+    task_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """List execution history for a task (most recent first)"""
+    try:
+        query = (
+            select(Execution)
+            .where(Execution.task_id == task_id)
+            .order_by(Execution.created_at.desc())
+        )
+        result = await db.execute(query)
+        executions = result.scalars().all()
+        return executions
+    except Exception as e:
+        logger.error(f"Failed to list executions for task {task_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list executions"
         )

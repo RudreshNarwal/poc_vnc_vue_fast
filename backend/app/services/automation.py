@@ -7,6 +7,11 @@ from typing import Dict, Any, Optional
 import logging
 
 from app.config import settings
+from tempfile import NamedTemporaryFile
+from app.services.data_loader import load_and_validate_records
+from app.services.storage import get_storage_service
+from app.models.database import AsyncSessionLocal
+from app.models.execution import Execution
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +126,7 @@ class AutomationEngine:
             }
         )
     
-    async def execute_task(self, task_data: Dict[str, Any], file = None):
+    async def execute_task(self, task_data: Dict[str, Any], file = None, execution_id: Optional[int] = None):
         self.is_running = True
         logger.info(f"Session {self.session_id}: Executing task '{task_data['name']}'")
 
@@ -132,10 +137,54 @@ class AutomationEngine:
             return
 
         try:
-            # Run the actual route automation script with async browser workflow
-            logger.info(f"Session {self.session_id}: Running route automation script.")
-            await self.run_route_automation()
-            await self.send_status("completed", "Route automation finished. Manual control is now active.")
+            # Resolve records from provided file (required)
+            if file is None:
+                raise ValueError("No file provided. Upload a CSV/XLSX and start again.")
+
+            storage_backend = settings.STORAGE_BACKEND
+            local_path = None
+            tmp_path = None
+            try:
+                if storage_backend == "minio":
+                    storage = get_storage_service()
+                    with NamedTemporaryFile(delete=False, suffix=f".{getattr(file, 'file_type', 'csv')}") as tmp:
+                        tmp_path = tmp.name
+                    storage.download_file(file.storage_path, tmp_path)
+                    local_path = tmp_path
+                else:
+                    # local storage; file.storage_path is typically an absolute path
+                    local_path = file.storage_path if os.path.isabs(file.storage_path) else os.path.join(settings.upload_dir, file.storage_path)
+
+                parsed = load_and_validate_records(local_path)
+                records = parsed.get("records", [])
+                if not records:
+                    raise ValueError("No valid data rows found after parsing the file.")
+
+                # Mark execution as running with total steps
+                if execution_id is not None:
+                    await self._update_execution(execution_id, {
+                        "status": "running",
+                        "start_time": datetime.now(self.timezone),
+                        "total_steps": len(records),
+                        "current_step": 0,
+                        "error_message": None
+                    })
+
+                # Run the actual route automation script with async browser workflow
+                logger.info(f"Session {self.session_id}: Running route automation script for {len(records)} records.")
+                await self.run_route_automation(records, execution_id)
+                await self.send_status("completed", "Route automation finished. Manual control is now active.")
+                if execution_id is not None:
+                    await self._update_execution(execution_id, {
+                        "status": "completed",
+                        "end_time": datetime.now(self.timezone)
+                    })
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
 
             # Keep the browser open for manual interaction (no time limit)
             logger.info(f"Session {self.session_id}: Browser will remain open indefinitely for manual inspection.")
@@ -147,6 +196,12 @@ class AutomationEngine:
         except Exception as e:
             logger.error(f"Session {self.session_id}: Task execution failed: {e}", exc_info=True)
             await self.send_status("error", f"Automation failed: {str(e)}")
+            if execution_id is not None:
+                await self._update_execution(execution_id, {
+                    "status": "failed",
+                    "end_time": datetime.now(self.timezone),
+                    "error_message": str(e)
+                })
         finally:
             # Intentionally not cleaning up immediately to keep VNC visible
             # await self.cleanup()
@@ -154,7 +209,7 @@ class AutomationEngine:
 
 
 
-    async def run_route_automation(self):
+    async def run_route_automation(self, records, execution_id: Optional[int] = None):
         """Run the actual route automation script using existing browser.
 
         This calls the async route_automation function with the current page instance.
@@ -166,9 +221,21 @@ class AutomationEngine:
             # Define progress callback (async version for route automation)
             async def progress_callback(progress_data: Dict[str, Any]):
                 await self.send_status("progress", "Route automation progress", progress_data)
-            
+                try:
+                    # Update current step if provided
+                    step = None
+                    if "processed_count" in progress_data:
+                        step = progress_data.get("processed_count")
+                    elif "step" in progress_data:
+                        step = progress_data.get("step")
+                    if execution_id is not None and step is not None:
+                        await self._update_execution(execution_id, {"current_step": int(step)})
+                except Exception:
+                    # Do not disrupt automation on telemetry failures
+                    pass
+
             # Run the automation script with existing page
-            await run_automation_async(self.page, progress_callback)
+            await run_automation_async(self.page, progress_callback, records)
             
         except Exception as e:
             logger.error(f"Route automation failed: {str(e)}")
@@ -243,21 +310,30 @@ class AutomationEngine:
     #         await self.send_status("error", f"Demo flow failed: {str(e)}")
     #         raise
     
-    async def pause(self):
+    async def pause(self, execution_id: Optional[int] = None):
         """Pause automation"""
         self.is_paused = True
         await self.send_status("paused", "Automation paused")
+        if execution_id is not None:
+            await self._update_execution(execution_id, {"status": "paused"})
     
-    async def resume(self):
+    async def resume(self, execution_id: Optional[int] = None):
         """Resume automation"""
         self.is_paused = False
         await self.send_status("running", "Automation resumed")
+        if execution_id is not None:
+            await self._update_execution(execution_id, {"status": "running"})
     
-    async def stop(self):
+    async def stop(self, execution_id: Optional[int] = None):
         """Stop automation"""
         self.is_running = False
         self.is_paused = False
         await self.send_status("stopped", "Automation stopped")
+        if execution_id is not None:
+            await self._update_execution(execution_id, {
+                "status": "stopped",
+                "end_time": datetime.now(self.timezone)
+            })
         await self.cleanup()
     
     async def cleanup(self):
@@ -271,6 +347,19 @@ class AutomationEngine:
                 await self.playwright.stop()
         except Exception as e:
             logger.error(f"Cleanup error: {str(e)}")
+
+    async def _update_execution(self, execution_id: int, fields: Dict[str, Any]):
+        """Update execution row in DB."""
+        try:
+            async with AsyncSessionLocal() as db:
+                exec_obj = await db.get(Execution, execution_id)
+                if not exec_obj:
+                    return
+                for k, v in (fields or {}).items():
+                    setattr(exec_obj, k, v)
+                await db.commit()
+        except Exception as e:
+            logger.error(f"Failed to update execution {execution_id}: {e}")
 
 # Global automation engines
 automation_engines: Dict[str, AutomationEngine] = {}
