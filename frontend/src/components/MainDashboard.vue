@@ -284,6 +284,43 @@ const fileState = reactive({
 const showUploadDialog = ref(false)
 const uploadDialog = reactive({ type: 'success', title: '', message: '' })
 
+// Keep local dropzone state in sync with Pinia per selected task
+const syncFileStateForTask = () => {
+  if (!selectedTaskId.value) { 
+    // reset local state without referencing clearFile (avoid hoisting issues)
+    fileState.uploaded = false
+    fileState.validating = false
+    fileState.valid = false
+    fileState.error = false
+    fileState.errorMessage = ''
+    fileState.filename = ''
+    fileState.originalName = ''
+    fileState.totalRows = 0
+    return
+  }
+  const f = uploads.getByTaskId(selectedTaskId.value)
+  if (f) {
+    fileState.uploaded = true
+    fileState.validating = false
+    fileState.valid = true
+    fileState.error = false
+    fileState.errorMessage = ''
+    fileState.filename = f.filename
+    fileState.originalName = f.original_filename
+    fileState.totalRows = f?.validation_results?.total_rows ?? 0
+  } else {
+    // reset local state (no dependency on clearFile)
+    fileState.uploaded = false
+    fileState.validating = false
+    fileState.valid = false
+    fileState.error = false
+    fileState.errorMessage = ''
+    fileState.filename = ''
+    fileState.originalName = ''
+    fileState.totalRows = 0
+  }
+}
+
 // Helpers
 const statusPill = (s) => {
   if (s === 'completed') return 'bg-emerald-100 text-emerald-700'
@@ -304,7 +341,8 @@ const selectTask = (id) => {
 }
 watch(selectedTaskId, () => {
   loadExecutions()
-})
+  syncFileStateForTask()
+}, { immediate: true })
 
 const connectWebSocket = () => {
   if (!sessionId.value) return
@@ -473,7 +511,10 @@ onMounted(async () => {
   try {
     const { data } = await axios.get('/api/tasks/')
     tasks.value = data
-    if (tasks.value.length) selectedTaskId.value = tasks.value[0].id
+    if (tasks.value.length) {
+      selectedTaskId.value = tasks.value[0].id
+      syncFileStateForTask()
+    }
   } catch (e) {
     console.error('Failed to load tasks', e)
   }
