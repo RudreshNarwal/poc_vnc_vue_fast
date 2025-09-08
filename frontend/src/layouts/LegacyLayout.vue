@@ -30,6 +30,13 @@
                 >
                   Builder
                 </router-link>
+                <router-link
+                  to="/test/multisessiontest"
+                  class="hover:bg-gray-100 px-3 py-2 rounded-md text-sm font-medium text-gray-700"
+                  :class="{ 'bg-gray-100': $route.name === 'MultiSessionTest' }"
+                >
+                  Multi Session Test
+                </router-link>
               </div>
             </div>
           </div>
